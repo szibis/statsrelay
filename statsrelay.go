@@ -459,6 +459,7 @@ func main() {
 		go func() {
 			log.Println(http.ListenAndServe(profilingBind, nil))
 		}()
+	}
 
 	if maxprocs != 0 {
 		log.Printf("Using GOMAXPROCS %d", maxprocs)
