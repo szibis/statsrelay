@@ -32,7 +32,7 @@ Command synopsis:
     -metrics-tags="": Metrics tags added at the end of each relayed metric
     -bufsize="32768": Read buffer size
     -packetlen="1400": Max packet length. Must be lower than MTU plus IPv4 and UDP headers to avoid fragmentation.
-    -sendproto="UDP": IP Protocol for sending data - TCP or UDP
+    -sendproto="UDP": IP Protocol for sending data: TCP, UDP, or TEST
     -tcptimeout="1s": Timeout for TCP client remote connections
     -pprof=false: Golang profiling support
     -pprof-bind=":8080": Listen host:port for HTTP pprof data
@@ -102,6 +102,50 @@ job.  (A Puppet ERB template.)
     exec /usr/bin/statsrelay --port 9125 --bind 0.0.0.0 \
         --prefix statsrelay.<%= @hostname %> \
 	<%= @dest.join(" \\\n    ") %>
+
+
+Go Profiling Support
+--------------------
+
+Heap profile example:
+
+    go tool pprof http://localhost:8080/debug/pprof/heap
+
+Or to look at a 30-second CPU profile example:
+
+    go tool pprof http://localhost:8080/debug/pprof/profile
+
+Goroutine blocking profile example:
+
+    go tool pprof http://localhost:6060/debug/pprof/block
+
+For longer profiling and saving Graphviz in png/svg/pdf:
+
+```
+go tool pprof http://localhost:8080/debug/pprof/profile?seconds=180
+Fetching profile from http://localhost:8080/debug/pprof/profile?seconds=180
+Please wait... (3m0s)
+Saved profile in /tmp/pprof/pprof.statsrelay.localhost:8080.samples.cpu.007.pb.gz
+Entering interactive mode (type "help" for commands)
+(pprof) top
+19890ms of 37300ms total (53.32%)
+Dropped 343 nodes (cum <= 186.50ms)
+Showing top 10 nodes out of 176 (cum >= 1860ms)
+      flat  flat%   sum%        cum   cum%
+    9880ms 26.49% 26.49%    10570ms 28.34%  syscall.Syscall
+    3130ms  8.39% 34.88%     3130ms  8.39%  runtime.futex
+    1320ms  3.54% 38.42%     2590ms  6.94%  runtime.mallocgc
+    1180ms  3.16% 41.58%     1180ms  3.16%  syscall.RawSyscall
+    1020ms  2.73% 44.32%     1020ms  2.73%  runtime._ExternalCode
+    1020ms  2.73% 47.05%     1020ms  2.73%  runtime.epollctl
+     970ms  2.60% 49.65%      970ms  2.60%  runtime.epollwait
+     570ms  1.53% 51.18%      570ms  1.53%  runtime.heapBitsSetType
+     430ms  1.15% 52.33%      430ms  1.15%  runtime.memmove
+     370ms  0.99% 53.32%     1860ms  4.99%  runtime.newobject
+(pprof) png > graph.png
+Generating report in graph.png
+(pprof) svg > graph.svg                                                                                                                                                                                                                      Generating report in graph.svg
+```
 
 [1]: http://keepalived.org/
 [2]: https://github.com/etsy/statsd
