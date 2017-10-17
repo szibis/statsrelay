@@ -1,0 +1,16 @@
+---
+rules:
+  - name: "test1"
+    match: "(.*)"
+    replace: "testmetric1"
+    tags:
+      - "env:sandbox"
+      - "region:us-east-1"
+  - name: "test2"
+    match: "statsd.testapp1.(.*)"
+    replace: "statsd.testapp1.testmetric2"
+    tags:
+      - "env:sandbox"
+      - "region:us-east-1"
+      - "project:default"
+

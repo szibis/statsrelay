@@ -6,6 +6,8 @@ import (
 	"flag"
 	"fmt"
 	"github.com/jpillora/backoff"
+	"github.com/kr/pretty"
+	"github.com/spf13/viper"
 	"io/ioutil"
 	"log"
 	"net"
@@ -13,6 +15,7 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -21,7 +24,7 @@ import (
 	"time"
 )
 
-const VERSION string = "0.0.6"
+const VERSION string = "0.0.7"
 
 // BUFFERSIZE controls the size of the [...]byte array used to read UDP data
 // off the wire and into local memory.  Metrics are separated by \n
@@ -102,6 +105,21 @@ var TCPMaxBackoff time.Duration
 // TCPFactorBackoff float64 value for backoff factor
 var TCPFactorBackoff float64
 
+// Definitions []string set of strings
+var Definitions []string
+
+// rulesConfig string value for config file name with match rules
+var rulesConfig string
+
+type rulesDef struct {
+	Rules []struct {
+		Name    string   `yaml:name`
+		Match   string   `yaml:"match"`
+		Replace string   `yaml:"replace"`
+		Tags    []string `yaml:"tags"`
+	} `yaml:"rules"`
+}
+
 // sockBufferMaxSize() returns the maximum size that the UDP receive buffer
 // in the kernel can be set to.  In bytes.
 func getSockBufferMaxSize() (int, error) {
@@ -120,6 +138,18 @@ func getSockBufferMaxSize() (int, error) {
 	}
 
 	return i, nil
+}
+
+// matchMetric() match metric based on regexp definition and then
+// replace if matched
+func matchMetric(metric []byte, Definitions []string) ([]string, error) {
+	for d := 0; d < len(Definitions); d++ {
+		var re = regexp.MustCompile(Definitions[d])
+		match := re.FindStringSubmatch(string(metric))
+		return match, nil
+		break
+	}
+	return nil, errors.New("No match found for " + string(metric))
 }
 
 // getMetricName() parses the given []byte metric as a string, extracts
@@ -479,15 +509,40 @@ func main() {
 	flag.DurationVar(&TCPMinBackoff, "backoff-min", 50*time.Millisecond, "Backoff minimal (integer) time in Millisecond")
 	flag.DurationVar(&TCPMaxBackoff, "backoff-max", 1000*time.Millisecond, "Backoff maximal (integer) time in Millisecond")
 	flag.Float64Var(&TCPFactorBackoff, "backoff-factor", 1.5, "Backoff factor (float)")
+	flag.StringVar(&rulesConfig, "rules", "statsrelay.yml", "Config file for statsrelay with matching rules for metrics")
+	flag.StringVar(&rulesConfig, "r", "statsrelay.yml", "Config file for statsrelay with matching rules for metrics")
+
+	flag.Parse()
 
 	defaultBufferSize, err := getSockBufferMaxSize()
 	if err != nil {
 		defaultBufferSize = 32 * 1024
 	}
 
-	flag.IntVar(&bufferMaxSize, "bufsize", defaultBufferSize, "Read buffer size")
+	// viper config rules loading
+	log.Printf("Setting rules config file: %s \n", rulesConfig)
+	viper.SetConfigFile(rulesConfig)
+	viper.AddConfigPath(".")
+	viper.SetConfigType("yaml")
 
-	flag.Parse()
+	err = viper.ReadInConfig()
+
+	if err != nil {
+		log.Fatalf("Error reading rules file: %s \n", err)
+		//viper.SetDefault("rules", "All (.*) pass")
+	}
+
+	var rules rulesDef
+
+	if err := viper.Unmarshal(&rules); err != nil {
+		log.Fatalf("Fatal error loading rules: %s \n", err)
+		//viper.SetDefault("rules", "All (.*) pass")
+	}
+
+	fmt.Printf("%# v\n", pretty.Formatter(rules))
+	// end viper config for rules
+
+	flag.IntVar(&bufferMaxSize, "bufsize", defaultBufferSize, "Read buffer size")
 
 	if len(flag.Args()) == 0 {
 		log.Fatalf("One or more host specifications are needed to locate statsd daemons.\n")
