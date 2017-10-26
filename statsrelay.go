@@ -120,6 +120,9 @@ type rulesDef struct {
 	} `yaml:"rules"`
 }
 
+// Rules to rules Def
+var Rules rulesDef
+
 // sockBufferMaxSize() returns the maximum size that the UDP receive buffer
 // in the kernel can be set to.  In bytes.
 func getSockBufferMaxSize() (int, error) {
@@ -142,14 +145,20 @@ func getSockBufferMaxSize() (int, error) {
 
 // matchMetric() match metric based on regexp definition and then
 // replace if matched
-func matchMetric(metric []byte, Definitions []string) ([]string, error) {
-	for d := 0; d < len(Definitions); d++ {
-		var re = regexp.MustCompile(Definitions[d])
-		match := re.FindStringSubmatch(string(metric))
-		return match, nil
-		break
+func matchMetric(metric []byte, Definition string, Replace string) ([]byte, bool) {
+	//for d := 0; d < len(Definitions); d++ {
+	//for _, r := range rule {
+	var re = regexp.MustCompile(Definition)
+	match := re.FindAllString(string(metric), -1)
+	replaced := re.ReplaceAllString(string(metric), Replace)
+	if match != nil {
+		if verbose {
+			log.Printf("Metric: %s, To_match: %s, Replace: %s, Replaced: %s", string(metric), Definitions, Replace, replaced)
+		}
+		return []byte(replaced), true
 	}
-	return nil, errors.New("No match found for " + string(metric))
+	return nil, false
+
 }
 
 // getMetricName() parses the given []byte metric as a string, extracts
@@ -223,8 +232,8 @@ func sendPacket(buff []byte, target string, sendproto string, TCPtimeout time.Du
 				time.Sleep(doff)
 				continue
 			}
-			boff.Reset()
 			conn.Write(buff)
+			boff.Reset()
 			defer conn.Close()
 		}
 	case "TEST":
@@ -259,7 +268,9 @@ func handleBuff(buff []byte) {
 	packets := buildPacketMap()
 	sep := []byte("\n")
 	numMetrics := 0
+	numMetricsDropped := 0
 	statsMetric := prefix + ".statsProcessed"
+	statsMetricDropped := prefix + ".statsDropped"
 
 	boff := &backoff.Backoff{
 		Min:    TCPMinBackoff,
@@ -307,22 +318,27 @@ func handleBuff(buff []byte) {
 				packets[target].Reset()
 			}
 			// add to packet
-			if len(metricsPrefix) != 0 || len(metricTags) != 0 {
-				buffPrefix, err := extendMetric(buff[offset:offset+size], metricsPrefix, metricTags)
-				if verbose {
-					log.Printf("Sending %s to %s", buffPrefix, target)
-				}
-				if err != nil {
-					if len(metricsPrefix) != 0 {
-						log.Printf("Error %s when adding prefix %s", err, metricsPrefix)
-						break
+			buffPrefix := buff[offset : offset+size]
+			if len(Rules.Rules) != 0 {
+				var countMatchDropped int = 0
+				for _, r := range Rules.Rules {
+					buffPrefix, matched := matchMetric(buffPrefix, r.Match, r.Replace)
+					if matched == true {
+						packets[target].Write(buffPrefix)
+						countMatchDropped = 0
+						if verbose {
+							log.Printf("Sending %s to %s", buffPrefix, target)
+						}
 					}
-					if len(metricTags) != 0 {
-						log.Printf("Error %s when adding tag %s", err, metricTags)
-						break
+					if matched == false {
+						countMatchDropped++
+						continue
 					}
 				}
-				packets[target].Write(buffPrefix)
+				if verbose && countMatchDropped != 0 {
+					log.Printf("No match for %s - skipping", string(metric))
+					numMetricsDropped++
+				}
 			} else {
 				if verbose {
 					log.Printf("Sending %s to %s", metric, target)
@@ -348,13 +364,21 @@ func handleBuff(buff []byte) {
 	totalMetricsLock.Unlock()
 
 	// Handle reporting our own stats
-	stats := fmt.Sprintf("%s:%d|c\n", statsMetric, numMetrics)
+	stats := fmt.Sprintf("%s:%d|c\n", statsMetric, numMetrics-numMetricsDropped)
+	statsdropped := fmt.Sprintf("%s:%d|c\n", statsMetricDropped, numMetricsDropped)
 	target := hashRing.GetNode(statsMetric).Server
+	targetdropped := hashRing.GetNode(statsMetricDropped).Server
 	if packets[target].Len()+len(stats) > packetLen {
 		sendPacket(packets[target].Bytes(), target, sendproto, TCPtimeout, boff)
 		packets[target].Reset()
 	}
+	if packets[target].Len()+len(statsdropped) > packetLen {
+		sendPacket(packets[targetdropped].Bytes(), targetdropped, sendproto, TCPtimeout, boff)
+		packets[targetdropped].Reset()
+	}
+
 	packets[target].Write([]byte(stats))
+	packets[target].Write([]byte(statsdropped))
 
 	// Empty out any remaining data
 	for _, target := range hashRing.Nodes() {
@@ -362,10 +386,15 @@ func handleBuff(buff []byte) {
 			sendPacket(packets[target.Server].Bytes(), target.Server, sendproto, TCPtimeout, boff)
 		}
 	}
+	for _, targetdropped := range hashRing.Nodes() {
+		if packets[targetdropped.Server].Len() > 0 {
+			sendPacket(packets[targetdropped.Server].Bytes(), targetdropped.Server, sendproto, TCPtimeout, boff)
+		}
+	}
 
 	if verbose && time.Now().Unix()-epochTime > 0 {
-		log.Printf("Processed %d metrics. Running total: %d. Metrics/sec: %d\n",
-			numMetrics, totalMetrics,
+		log.Printf("Processed %d metrics. Dropped %d metrics. Running total: %d. Metrics/sec: %d\n",
+			numMetrics-numMetricsDropped, numMetricsDropped, totalMetrics,
 			int64(totalMetrics)/(time.Now().Unix()-epochTime))
 	}
 }
@@ -532,14 +561,12 @@ func main() {
 		//viper.SetDefault("rules", "All (.*) pass")
 	}
 
-	var rules rulesDef
-
-	if err := viper.Unmarshal(&rules); err != nil {
+	if err := viper.Unmarshal(&Rules); err != nil {
 		log.Fatalf("Fatal error loading rules: %s \n", err)
 		//viper.SetDefault("rules", "All (.*) pass")
 	}
 
-	fmt.Printf("%# v\n", pretty.Formatter(rules))
+	fmt.Printf("%# v\n", pretty.Formatter(Rules))
 	// end viper config for rules
 
 	flag.IntVar(&bufferMaxSize, "bufsize", defaultBufferSize, "Read buffer size")
