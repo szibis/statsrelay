@@ -345,9 +345,19 @@ func handleBuff(buff []byte) {
 	// Handle reporting our own stats
 	stats := fmt.Sprintf("%s:%d|c\n", statsMetric, numMetrics)
 	target := hashRing.GetNode(statsMetric).Server
+	if mirror != "" {
+		if mirrorPackets[mirror].Len()+len(stats) > packetLen {
+			go sendPacket(mirrorPackets[mirror].Bytes(), mirror, sendproto, TCPtimeout, boff)
+			mirrorPackets[mirror].Reset()
+		}
+	}
 	if packets[target].Len()+len(stats) > packetLen {
 		sendPacket(packets[target].Bytes(), target, sendproto, TCPtimeout, boff)
 		packets[target].Reset()
+	}
+
+	if mirror != "" {
+		mirrorPackets[mirror].Write([]byte(stats))
 	}
 	packets[target].Write([]byte(stats))
 
