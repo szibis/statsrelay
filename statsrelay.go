@@ -5,7 +5,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/jpillora/backoff"
 	"io/ioutil"
 	"log"
 	"net"
@@ -19,6 +18,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/jpillora/backoff"
 )
 
 const VERSION string = "0.0.6"
@@ -51,6 +52,9 @@ var udpAddr = make(map[string]*net.UDPAddr)
 
 // tcpAddr is a mapping of HOST:PORT:INSTANCE to a TCPAddr object
 var tcpAddr = make(map[string]*net.TCPAddr)
+
+// mirror is a HOST:PORT address for mirroring raw statsd metrics
+var mirror string
 
 // hashRing is our consistent hashing ring.
 var hashRing = NewJumpHashRing(1)
@@ -227,6 +231,10 @@ func buildPacketMap() map[string]*bytes.Buffer {
 // to remote statsd daemons using a consistent hash.
 func handleBuff(buff []byte) {
 	packets := buildPacketMap()
+	mirrorPackets := make(map[string]*bytes.Buffer)
+	if mirror != "" {
+		mirrorPackets[mirror] = new(bytes.Buffer)
+	}
 	sep := []byte("\n")
 	numMetrics := 0
 	statsMetric := prefix + ".statsProcessed"
@@ -271,6 +279,14 @@ func handleBuff(buff []byte) {
 
 			target := hashRing.GetNode(metric).Server
 
+			// prepare packets for mirroring
+			if mirror != "" {
+				// check built packet size and send if metric doesn't fit
+				if mirrorPackets[mirror].Len()+size > packetLen {
+					go sendPacket(mirrorPackets[mirror].Bytes(), mirror, sendproto, TCPtimeout, boff)
+					mirrorPackets[mirror].Reset()
+				}
+			}
 			// check built packet size and send if metric doesn't fit
 			if packets[target].Len()+size > packetLen {
 				go sendPacket(packets[target].Bytes(), target, sendproto, TCPtimeout, boff)
@@ -292,12 +308,21 @@ func handleBuff(buff []byte) {
 						break
 					}
 				}
+				if mirror != "" {
+					mirrorPackets[mirror].Write(buffPrefix)
+				}
 				packets[target].Write(buffPrefix)
 			} else {
 				if verbose {
 					log.Printf("Sending %s to %s", metric, target)
 				}
+				if mirror != "" {
+					mirrorPackets[mirror].Write(buff[offset : offset+size])
+				}
 				packets[target].Write(buff[offset : offset+size])
+			}
+			if mirror != "" {
+				mirrorPackets[mirror].Write(sep)
 			}
 			packets[target].Write(sep)
 			numMetrics++
@@ -327,6 +352,11 @@ func handleBuff(buff []byte) {
 	packets[target].Write([]byte(stats))
 
 	// Empty out any remaining data
+	if mirror != "" {
+		if mirrorPackets[mirror].Len() > 0 {
+			sendPacket(mirrorPackets[mirror].Bytes(), mirror, sendproto, TCPtimeout, boff)
+		}
+	}
 	for _, target := range hashRing.Nodes() {
 		if packets[target.Server].Len() > 0 {
 			sendPacket(packets[target.Server].Bytes(), target.Server, sendproto, TCPtimeout, boff)
@@ -455,6 +485,9 @@ func main() {
 
 	flag.StringVar(&bindAddress, "bind", "0.0.0.0", "IP Address to listen on")
 	flag.StringVar(&bindAddress, "b", "0.0.0.0", "IP Address to listen on")
+
+	flag.StringVar(&mirror, "mirror", "", "Address to mirror raw stats (HOST:PORT format)")
+	flag.StringVar(&mirror, "m", "", "Address to mirror raw stats (HOST:PORT format)")
 
 	flag.StringVar(&prefix, "prefix", "statsrelay", "The prefix to use with self generated stats")
 	flag.StringVar(&metricsPrefix, "metrics-prefix", "", "The prefix to use with metrics passed through statsrelay")
