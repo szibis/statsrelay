@@ -153,7 +153,7 @@ func matchMetric(metric []byte, Definition string, Replace string) ([]byte, bool
 	replaced := re.ReplaceAllString(string(metric), Replace)
 	if match != nil {
 		if verbose {
-			log.Printf("Metric: %s, To_match: %s, Replace: %s, Replaced: %s", string(metric), Definitions, Replace, replaced)
+			log.Printf("Metric: %s, Match: %s Rule: %s, Replaced: %s", string(metric), Definition, Replace, replaced)
 		}
 		return []byte(replaced), true
 	}
@@ -235,6 +235,7 @@ func sendPacket(buff []byte, target string, sendproto string, TCPtimeout time.Du
 			conn.Write(buff)
 			boff.Reset()
 			defer conn.Close()
+			break
 		}
 	case "TEST":
 		if verbose {
