@@ -476,6 +476,34 @@ func runServer(host string, port int) {
 	}
 }
 
+// validateHost() checks if given HOST:PORT:INSTANCE address is in proper format
+func validateHost(address string) (*net.UDPAddr, error) {
+	var addr *net.UDPAddr
+	var err error
+	host := strings.Split(address, ":")
+
+	switch len(host) {
+	case 1:
+		log.Printf("Invalid statsd location: %s\n", address)
+		log.Fatalf("Must be of the form HOST:PORT or HOST:PORT:INSTANCE\n")
+	case 2:
+		addr, err = net.ResolveUDPAddr("udp", address)
+		if err != nil {
+			log.Printf("Error parsing HOST:PORT \"%s\"\n", address)
+			log.Fatalf("%s\n", err.Error())
+		}
+	case 3:
+		addr, err = net.ResolveUDPAddr("udp", host[0]+":"+host[1])
+		if err != nil {
+			log.Printf("Error parsing HOST:PORT:INSTANCE \"%s\"\n", address)
+			log.Fatalf("%s\n", err.Error())
+		}
+	default:
+		log.Fatalf("Unrecongnized host specification: %s\n", address)
+	}
+	return addr, err
+}
+
 func main() {
 	var bindAddress string
 	var port int
@@ -537,31 +565,12 @@ func main() {
 		}()
 	}
 
+	// HOST:PORT:INSTANCE validation
+	if mirror != "" {
+		_, _ = validateHost(mirror)
+	}
 	for _, v := range flag.Args() {
-		var addr *net.UDPAddr
-		var err error
-		host := strings.Split(v, ":")
-
-		switch len(host) {
-		case 1:
-			log.Printf("Invalid statsd location: %s\n", v)
-			log.Fatalf("Must be of the form HOST:PORT or HOST:PORT:INSTANCE\n")
-		case 2:
-			addr, err = net.ResolveUDPAddr("udp", v)
-			if err != nil {
-				log.Printf("Error parsing HOST:PORT \"%s\"\n", v)
-				log.Fatalf("%s\n", err.Error())
-			}
-		case 3:
-			addr, err = net.ResolveUDPAddr("udp", host[0]+":"+host[1])
-			if err != nil {
-				log.Printf("Error parsing HOST:PORT:INSTANCE \"%s\"\n", v)
-				log.Fatalf("%s\n", err.Error())
-			}
-		default:
-			log.Fatalf("Unrecongnized host specification: %s\n", v)
-		}
-
+		addr, _ := validateHost(v)
 		if addr != nil {
 			udpAddr[v] = addr
 			hashRing.AddNode(Node{v, ""})
