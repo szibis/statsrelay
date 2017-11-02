@@ -13,9 +13,9 @@ rules:
       - "env:$2"
       - "region:$3"
       - "project:$4"
-#  - name: "test3"
-#    match: "(.*)"
-#    replace: "$1"
-#    tags:
-#      - "env:sandbox"
-#      - "region:eu-west-1"
+  - name: "test3"
+    match: "(.*)"
+    replace: "globalprefix.$1"
+    tags:
+      - "env:sandbox"
+      - "region:eu-west-1"

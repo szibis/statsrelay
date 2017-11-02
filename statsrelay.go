@@ -123,6 +123,8 @@ type rulesDef struct {
 // Rules to rules Def
 var Rules rulesDef
 
+//var replaced string
+
 // sockBufferMaxSize() returns the maximum size that the UDP receive buffer
 // in the kernel can be set to.  In bytes.
 func getSockBufferMaxSize() (int, error) {
@@ -143,21 +145,40 @@ func getSockBufferMaxSize() (int, error) {
 	return i, nil
 }
 
-// matchMetric() match metric based on regexp definition and then
-// replace if matched
-func matchMetric(metric []byte, Definition string, Replace string) ([]byte, bool) {
-	//for d := 0; d < len(Definitions); d++ {
-	//for _, r := range rule {
-	var re = regexp.MustCompile(Definition)
-	match := re.FindAllString(string(metric), -1)
-	replaced := re.ReplaceAllString(string(metric), Replace)
-	if match != nil {
-		if verbose {
-			log.Printf("Metric: %s, Match: %s Rule: %s, Replaced: %s", string(metric), Definition, Replace, replaced)
+// matchMetric() match metric based on regexp definition match
+func metricMatchReplace(metric []byte, rules *rulesDef) ([]byte, []string) {
+	var replaced string
+	var match []string
+	for _, r := range rules.Rules {
+		re := regexp.MustCompile(r.Match)
+		if replaced == "" {
+			match = re.FindAllString(string(metric), -1)
+			if r.Tags != nil {
+				log.Printf("replace: %s, tags: %s, tagmetric: %s", metric, r.Tags, r.Replace)
+				tagMetric := genTags(metric, r.Tags, r.Replace)
+				log.Printf("metric: %s, tagmetric: %s", metric, tagMetric)
+				replaced = re.ReplaceAllString(tagMetric, r.Replace)
+				//replaced = re.ReplaceAllString(string(tagMetric), tags)
+			} else {
+				replaced = re.ReplaceAllString(string(metric), r.Replace)
+			}
+		} else {
+			match = re.FindAllString(replaced, -1)
+			if r.Tags != nil {
+				log.Printf("replace: %s, tags: %s, metric: %s", metric, r.Tags, r.Replace)
+				tagMetric := genTags([]byte(replaced), r.Tags, r.Replace)
+				log.Printf("metric: %s, tagmetric: %s", metric, tagMetric)
+				replaced = re.ReplaceAllString(tagMetric, r.Replace)
+				//replaced = re.ReplaceAllString(string(tagMetric), tags)
+			} else {
+				replaced = re.ReplaceAllString(replaced, r.Replace)
+			}
 		}
-		return []byte(replaced), true
+		if verbose && match != nil {
+			log.Printf("Replacing Match: %s Rule: %s, Replaced: %s", r.Match, r.Replace, replaced)
+		}
 	}
-	return nil, false
+	return []byte(replaced), match
 
 }
 
@@ -170,45 +191,26 @@ func getMetricName(metric []byte) (string, error) {
 	if length == -1 {
 		return "error", errors.New("Length of -1, must be invalid StatsD data")
 	}
-	if len(metricsPrefix) != 0 {
-		return genPrefix(metric[:length], metricsPrefix), nil
-	}
 	return string(metric[:length]), nil
 }
 
-// genPrefix() combine metric []byte with metricsPrefix string and return as string
-func genPrefix(metric []byte, metricsPrefix string) string {
-	if len(metricsPrefix) != 0 {
-		return fmt.Sprintf("%s.%s", metricsPrefix, string(metric))
-	}
-	return string(metric)
-}
-
-// extendMetric() add prefix to []byte metric as a string, extracts metric
-// key name and add metrics prefixs, then returning new key as []byte.
-func extendMetric(metric []byte, metricsPrefix string, metricTags string) ([]byte, error) {
-	// statsd metrics are of the form:
-	// KEY:VALUE|TYPE|RATE or KEY:VALUE|TYPE|RATE|#tags
-	length := bytes.IndexByte(metric, byte(':'))
-	if length == -1 {
-		return nil, errors.New("Length of -1, must be invalid StatsD data in adding prefix")
-	}
-	if len(metricTags) != 0 {
-		return []byte(genTags(genPrefix(metric, metricsPrefix), metricTags)), nil
-	}
-	return []byte(genPrefix(metric, metricsPrefix)), nil
+func splitTags(tags string) []string {
+	tag := strings.Split(tags, ",")
+	return tag
 }
 
 // genTags() add metric []byte and metricTags string, return string
 // of metrics with additional tags
-func genTags(metric, metricTags string) string {
+func genTags(metric []byte, metricTags []string, metricReplace string) string {
 	// statsd metrics are of the form:
 	// KEY:VALUE|TYPE|RATE or KEY:VALUE|TYPE|RATE|#tags
 	// This function add or extend #tags in metric
-	if strings.Contains((metric), "|#") {
-		return fmt.Sprintf("%s,%s", metric, metricTags)
+	tagsTmp := strings.Join(metricTags, ",")
+	log.Printf("%s , %s", metricReplace, tagsTmp)
+	if strings.Contains((string(metric)), "|#") {
+		return fmt.Sprintf("%s,%s", metricReplace, tagsTmp)
 	}
-	return fmt.Sprintf("%s|#%s", metric, metricTags)
+	return fmt.Sprintf("%s|#%s", metricReplace, tagsTmp)
 }
 
 // sendPacket takes a []byte and writes that directly to a UDP socket
@@ -319,22 +321,20 @@ func handleBuff(buff []byte) {
 				packets[target].Reset()
 			}
 			// add to packet
-			buffPrefix := buff[offset : offset+size]
+			var countMatchDropped int = 0 // check this is weird
 			if len(Rules.Rules) != 0 {
-				var countMatchDropped int = 0
-				for _, r := range Rules.Rules {
-					buffPrefix, matched := matchMetric(buffPrefix, r.Match, r.Replace)
-					if matched == true {
-						packets[target].Write(buffPrefix)
-						countMatchDropped = 0
-						if verbose {
-							log.Printf("Sending %s to %s", buffPrefix, target)
-						}
+				countMatchDropped := 0
+				buffNew, matched := metricMatchReplace(buff[offset:offset+size], &Rules)
+				//log.Printf("matched %s, buffnew %q", matched, buffNew)
+				if matched != nil {
+					packets[target].Write(buffNew)
+					countMatchDropped := 0
+					if verbose && countMatchDropped == 0 {
+						log.Printf("Sending %s to %s", buffNew, target)
 					}
-					if matched == false {
-						countMatchDropped++
-						continue
-					}
+				}
+				if matched == nil {
+					countMatchDropped++
 				}
 				if verbose && countMatchDropped != 0 {
 					log.Printf("No match for %s - skipping", string(metric))
@@ -346,11 +346,12 @@ func handleBuff(buff []byte) {
 				}
 				packets[target].Write(buff[offset : offset+size])
 			}
-			packets[target].Write(sep)
+			if countMatchDropped == 0 {
+				packets[target].Write(sep)
+				offset = offset + size + 1
+			}
 			numMetrics++
 		}
-
-		offset = offset + size + 1
 	}
 
 	if numMetrics == 0 {
