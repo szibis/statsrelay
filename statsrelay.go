@@ -345,40 +345,37 @@ func handleBuff(buff []byte) {
 				packets[target].Reset()
 			}
 			// add to packet
-			var countMatchDropped int = 0 // check this is weird
 			if len(Rules.Rules) != 0 {
-				countMatchDropped := 0
 				buffNew, matched := metricMatchReplace(buff[offset:offset+size], &Rules)
-				//log.Printf("matched %s, buffnew %q", matched, buffNew)
+				// send replaced metric
 				if matched > 0 {
-					packets[target].Write(buffNew)
-					countMatchDropped := 0
-					if verbose && countMatchDropped == 0 {
+					if verbose {
 						log.Printf("Sending %s to %s", buffNew, target)
 					}
+					packets[target].Write(buffNew)
+					packets[target].Write(sep)
+				} else {
+					// don't send metric if there's no rule match
+					if verbose {
+						log.Printf("No match for %s - skipping", string(metric))
+						numMetricsDropped++
+					}
 				}
-				if matched == 0 {
-					countMatchDropped++
-				}
-				if verbose && countMatchDropped != 0 {
-					log.Printf("No match for %s - skipping", string(metric))
-					numMetricsDropped++
-				}
+				// send unchanged metric
 			} else {
 				if verbose {
 					log.Printf("Sending %s to %s", metric, target)
 				}
 				packets[target].Write(buff[offset : offset+size])
-			}
-			if countMatchDropped == 0 {
 				packets[target].Write(sep)
-				offset = offset + size + 1
 			}
+
 			if mirror != "" {
 				mirrorPackets[mirror].Write(buff[offset : offset+size])
 				mirrorPackets[mirror].Write(sep)
 			}
 			numMetrics++
+			offset = offset + size + 1
 		}
 	}
 
