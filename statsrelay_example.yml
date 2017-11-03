@@ -1,21 +1,19 @@
 ---
 rules:
   - name: "test1"
-    match: "^(my_metric)"
-    replace: "testmetric1"
-    tags:
-      - "env:sandbox"
-      - "region:us-east-1"
+    match: "^(my_metric).(.*)"
+    replace: "testmetric1.$2"
+    tags: []
   - name: "test2"
     match: ".*(production).(us-east-1).(default).(helloworld).(.*)"
     replace: "statsd.$2.$1.$3.$4.$5"
     tags:
-      - "env:$2"
-      - "region:$3"
-      - "project:$4"
+      - "env:$1"
+      - "region:$2"
+      - "project:$3"
   - name: "test3"
     match: "(.*)"
     replace: "globalprefix.$1"
     tags:
-      - "env:sandbox"
+      - "env:sandboax"
       - "region:eu-west-1"
