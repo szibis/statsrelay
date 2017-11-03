@@ -5,9 +5,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/jpillora/backoff"
-	"github.com/kr/pretty"
-	"github.com/spf13/viper"
 	"io/ioutil"
 	"log"
 	"net"
@@ -22,6 +19,10 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/jpillora/backoff"
+	"github.com/kr/pretty"
+	"github.com/spf13/viper"
 )
 
 const VERSION string = "0.0.7"
@@ -426,11 +427,13 @@ func handleBuff(buff []byte) {
 	for _, target := range hashRing.Nodes() {
 		if packets[target.Server].Len() > 0 {
 			sendPacket(packets[target.Server].Bytes(), target.Server, sendproto, TCPtimeout, boff)
+			packets[target.Server].Reset()
 		}
 	}
 	for _, targetdropped := range hashRing.Nodes() {
 		if packets[targetdropped.Server].Len() > 0 {
 			sendPacket(packets[targetdropped.Server].Bytes(), targetdropped.Server, sendproto, TCPtimeout, boff)
+			packets[targetdropped.Server].Reset()
 		}
 	}
 
