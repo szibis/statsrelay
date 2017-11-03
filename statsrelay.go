@@ -184,7 +184,7 @@ func metricMatchReplace(metric []byte, rules *rulesDef) ([]byte, int) {
 				replaced = re.ReplaceAllString(replaced, r.Replace)
 			}
 		}
-		if verbose && matched > 0 {
+		if verbose && match != nil && matched != 0 {
 			log.Printf("Replacing Match: %s Rule: %s, Replaced: %s", r.Match, r.Replace, replaced)
 		}
 	}
