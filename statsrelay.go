@@ -288,6 +288,7 @@ func handleBuff(buff []byte) {
 	sep := []byte("\n")
 	numMetrics := 0
 	numMetricsDropped := 0
+	mirrorNumMetrics := 0
 	statsMetric := prefix + ".statsProcessed"
 	statsMetricDropped := prefix + ".statsDropped"
 
@@ -373,6 +374,7 @@ func handleBuff(buff []byte) {
 			if mirror != "" {
 				mirrorPackets[mirror].Write(buff[offset : offset+size])
 				mirrorPackets[mirror].Write(sep)
+				mirrorNumMetrics++
 			}
 			numMetrics++
 			offset = offset + size + 1
@@ -409,11 +411,12 @@ func handleBuff(buff []byte) {
 		sendPacket(packets[targetdropped].Bytes(), targetdropped, sendproto, TCPtimeout, boff)
 		packets[targetdropped].Reset()
 	}
-	if mirror != "" {
-		mirrorPackets[mirror].Write([]byte(stats))
-	}
 	packets[target].Write([]byte(stats))
 	packets[target].Write([]byte(statsdropped))
+	if mirror != "" {
+		stats = fmt.Sprintf("%s:%d|c\n", statsMetric, mirrorNumMetrics)
+		mirrorPackets[mirror].Write([]byte(stats))
+	}
 
 	// Empty out any remaining data
 	if mirror != "" {
