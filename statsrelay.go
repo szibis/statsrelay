@@ -85,7 +85,7 @@ var packetLen int
 // Maximum size of buffer
 var bufferMaxSize int
 
-// Timeout value for remote TCP connection
+// TCPtimeout duration value for for remote TCP connection
 var TCPtimeout time.Duration
 
 // profiling bool value to enable disable http endpoint for profiling
@@ -121,7 +121,7 @@ var rulesConfig string
 
 type rulesDef struct {
 	Rules []struct {
-		Name    string   `yaml:name`
+		Name    string   `yaml:"name"`
 		Match   string   `yaml:"match"`
 		Replace string   `yaml:"replace"`
 		Policy  string   `yaml:"policy"`
