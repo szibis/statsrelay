@@ -16,7 +16,7 @@ rules:
   - name: "test3"
     match: "(.*)"
     replace: "globalprefix.$1"
-    policy: "log"
+    policy: "drop"
     tags:
       - "env:sandboax"
       - "region:eu-west-1"

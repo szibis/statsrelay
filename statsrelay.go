@@ -159,7 +159,9 @@ func replacePrint(policy string, match string, replace string, replaced string) 
 	return
 }
 
-func replaceLogic(metric string, rMatch string, rReplace string, policy string, rTags []string) (string, int, string, bool) {
+// replaceLogic returns match rule, # of matched rules replace rule,
+// (un)replaced metric, policy and if processing rules should continue
+func replaceLogic(metric string, rMatch string, rReplace string, policy string, rTags []string) (string, int, string, string, string, bool) {
 	var match []string
 	var tagMetric string
 	var matched int
@@ -177,26 +179,27 @@ func replaceLogic(metric string, rMatch string, rReplace string, policy string, 
 	} else {
 		replaced = re.ReplaceAllString(metric, rReplace)
 	}
-	if match == nil && policy == "drop" {
-		replacePrint(policy, rMatch, rReplace, replaced)
-		//log.Printf("policy drop: %s", policy)
-		return "", 0, "", true
+
+	if policy == "pass" {
+		if match == nil {
+			return rMatch, matched, rReplace, metric, policy, true
+		}
+		return rMatch, matched, rReplace, replaced, policy, false
+	} else if policy == "drop" {
+		if match == nil {
+			return rMatch, matched, rReplace, "", policy, true
+		}
+		return rMatch, matched, rReplace, "", policy, false
 	}
-	if policy == "log" {
-		replacePrint(policy, rMatch, rReplace, replaced)
-		//log.Printf("policy log: %s", policy)
-		return "", 0, "", true
-	}
-	if match != nil && policy == "pass" {
-		log.Printf("policy pass: %s matched: %s metric: %s", policy, matched, metric)
-		return metric, matched, policy, false
-	}
-	return replaced, matched, policy, false
+	// same as for policy == pass and match != nil
+	// TODO: clean it up
+	return rMatch, matched, rReplace, replaced, policy, false
 }
 
 // matchMetric() match metric based on regexp definition match
 func metricMatchReplace(metric []byte, rules *rulesDef, policyDefault string) ([]byte, int, string) {
-	var match []string
+	var matchRule string
+	var replaceRule string
 	var policy string
 	var replaced string
 	var matched int
@@ -204,28 +207,22 @@ func metricMatchReplace(metric []byte, rules *rulesDef, policyDefault string) ([
 	for _, r := range rules.Rules {
 		if r.Policy != "" {
 			policy = r.Policy
-			//log.Printf("policy rules: %s", policy)
 		} else {
 			policy = policyDefault
-			//log.Printf("policy default: %s", policy)
 		}
-		if replaced == "" {
-			replaced, matched, policy, continues = replaceLogic(string(metric), r.Match, r.Replace, policy, r.Tags)
-			if continues == true {
-				continue
-			}
-		} else {
-			replaced, matched, policy, continues = replaceLogic(replaced, r.Match, r.Replace, policy, r.Tags)
-			if continues == true {
-				continue
-			}
-		}
-		if verbose && match != nil && matched != 0 {
-			replacePrint(policy, r.Match, r.Replace, replaced)
+		matchRule, matched, replaceRule, replaced, policy, continues = replaceLogic(string(metric), r.Match, r.Replace, policy, r.Tags)
+		if !continues {
+			break
 		}
 	}
+	// use default policy for unmatched metrics
+	if matched == 0 {
+		policy = defaultPolicy
+	}
+	if verbose {
+		replacePrint(policy, matchRule, replaceRule, replaced)
+	}
 	return []byte(replaced), matched, policy
-
 }
 
 // getMetricName() parses the given []byte metric as a string, extracts
@@ -384,33 +381,45 @@ func handleBuff(buff []byte) {
 			}
 			// add to packet
 			if len(Rules.Rules) != 0 {
-				//log.Printf("policy: %s", policy)
 				buffNew, matched, policy := metricMatchReplace(buff[offset:offset+size], &Rules, policy)
-				//log.Printf("policy after: %s", policy)
 				// send replaced metric
 				if matched > 0 {
-					if verbose && policy == "log" {
-						log.Printf("Match %s and %s only", buffNew, policy)
-					}
-					if verbose && policy == "pass" || policy != "drop" {
-						log.Printf("Sending %s to %s", buffNew, target)
-						packets[target].Write(buffNew)
-						packets[target].Write(sep)
+					if verbose {
+						log.Printf("Matched %s and policy is %s", metric, strings.ToUpper(policy))
+						if policy == "pass" {
+							log.Printf("Sending %s to %s", buffNew, target)
+						} else if policy == "drop" {
+							log.Printf("Dropping %s", buffNew)
+						}
 					}
 				} else {
-					// don't send metric if there's no rule match
-					if verbose && policy == "drop" || policy == "log" {
-						log.Printf("No match %s and %s", string(metric), policy)
-						numMetricsDropped++
+					// don't replace metric if there's no rule match
+					if verbose {
+						log.Printf("No match for %s and policy is %s", metric, strings.ToUpper(policy))
+						if policy == "pass" {
+							log.Printf("Sending %s to %s", string(metric), target)
+						} else if policy == "drop" {
+							log.Printf("Dropping %s", string(metric))
+						}
 					}
+				}
+				if policy == "pass" {
+					packets[target].Write(buffNew)
+					packets[target].Write(sep)
+				} else if policy == "drop" {
+					numMetricsDropped++
 				}
 				// send unchanged metric
 			} else {
-				if verbose && policy == "drop" || policy == "log" {
-					log.Printf("Drop %s to %s", metric, target)
-				}
-				if verbose && policy == "pass" {
-					log.Printf("Sending %s to %s", metric, target)
+				if policy == "drop" {
+					if verbose {
+						log.Printf("Drop %s to %s", metric, target)
+					}
+					numMetricsDropped++
+				} else if policy == "pass" {
+					if verbose {
+						log.Printf("Sending %s to %s", metric, target)
+					}
 					packets[target].Write(buff[offset : offset+size])
 					packets[target].Write(sep)
 				}
