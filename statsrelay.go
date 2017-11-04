@@ -112,6 +112,10 @@ var TCPFactorBackoff float64
 // Definitions []string set of strings
 var Definitions []string
 
+// defaultPolicy string value for setting default rules policy
+// Available options are: drop or pass or log (log-only)
+var defaultPolicy string
+
 // rulesConfig string value for config file name with match rules
 var rulesConfig string
 
@@ -120,6 +124,7 @@ type rulesDef struct {
 		Name    string   `yaml:name`
 		Match   string   `yaml:"match"`
 		Replace string   `yaml:"replace"`
+		Policy  string   `yaml:"policy"`
 		Tags    []string `yaml:"tags"`
 	} `yaml:"rules"`
 }
@@ -149,46 +154,77 @@ func getSockBufferMaxSize() (int, error) {
 	return i, nil
 }
 
-// matchMetric() match metric based on regexp definition match
-func metricMatchReplace(metric []byte, rules *rulesDef) ([]byte, int) {
-	var replaced string
+func replacePrint(policy string, match string, replace string, replaced string) {
+	log.Printf("[%s] Match: %s Rule: %s, Replaced: %s, Policy: %s", strings.ToUpper(policy), match, replace, replaced, strings.ToUpper(policy))
+	return
+}
+
+func replaceLogic(metric string, rMatch string, rReplace string, policy string, rTags []string) (string, int, string, bool) {
 	var match []string
 	var tagMetric string
 	var matched int
+	var replaced string
+	re := regexp.MustCompile(rMatch)
+	match = re.FindAllString(metric, -1)
+	if match != nil {
+		matched++
+	}
+	if rTags != nil {
+		tagMetric = genTags([]byte(metric), rTags, rReplace)
+	}
+	if tagMetric != "" {
+		replaced = re.ReplaceAllString(metric, tagMetric)
+	} else {
+		replaced = re.ReplaceAllString(metric, rReplace)
+	}
+	if match == nil && policy == "drop" {
+		replacePrint(policy, rMatch, rReplace, replaced)
+		//log.Printf("policy drop: %s", policy)
+		return "", 0, "", true
+	}
+	if policy == "log" {
+		replacePrint(policy, rMatch, rReplace, replaced)
+		//log.Printf("policy log: %s", policy)
+		return "", 0, "", true
+	}
+	if match != nil && policy == "pass" {
+		log.Printf("policy pass: %s matched: %s metric: %s", policy, matched, metric)
+		return metric, matched, policy, false
+	}
+	return replaced, matched, policy, false
+}
+
+// matchMetric() match metric based on regexp definition match
+func metricMatchReplace(metric []byte, rules *rulesDef, policyDefault string) ([]byte, int, string) {
+	var match []string
+	var policy string
+	var replaced string
+	var matched int
+	var continues bool
 	for _, r := range rules.Rules {
-		re := regexp.MustCompile(r.Match)
+		if r.Policy != "" {
+			policy = r.Policy
+			//log.Printf("policy rules: %s", policy)
+		} else {
+			policy = policyDefault
+			//log.Printf("policy default: %s", policy)
+		}
 		if replaced == "" {
-			match = re.FindAllString(string(metric), -1)
-			if match != nil {
-				matched++
-			}
-			if r.Tags != nil {
-				tagMetric = genTags(metric, r.Tags, r.Replace)
-			}
-			if tagMetric != "" {
-				replaced = re.ReplaceAllString(string(metric), tagMetric)
-			} else {
-				replaced = re.ReplaceAllString(string(metric), r.Replace)
+			replaced, matched, policy, continues = replaceLogic(string(metric), r.Match, r.Replace, policy, r.Tags)
+			if continues == true {
+				continue
 			}
 		} else {
-			match = re.FindAllString(replaced, -1)
-			if match != nil {
-				matched++
-			}
-			if r.Tags != nil {
-				tagMetric = genTags([]byte(replaced), r.Tags, r.Replace)
-			}
-			if tagMetric != "" {
-				replaced = re.ReplaceAllString(replaced, tagMetric)
-			} else {
-				replaced = re.ReplaceAllString(replaced, r.Replace)
+			replaced, matched, policy, continues = replaceLogic(replaced, r.Match, r.Replace, policy, r.Tags)
+			if continues == true {
+				continue
 			}
 		}
 		if verbose && match != nil && matched != 0 {
-			log.Printf("Replacing Match: %s Rule: %s, Replaced: %s", r.Match, r.Replace, replaced)
+			replacePrint(policy, r.Match, r.Replace, replaced)
 		}
 	}
-	return []byte(replaced), matched
+	return []byte(replaced), matched, policy
 
 }
 
@@ -291,6 +327,7 @@ func handleBuff(buff []byte) {
 	mirrorNumMetrics := 0
 	statsMetric := prefix + ".statsProcessed"
 	statsMetricDropped := prefix + ".statsDropped"
+	policy := defaultPolicy
 
 	boff := &backoff.Backoff{
 		Min:    TCPMinBackoff,
@@ -347,28 +384,36 @@ func handleBuff(buff []byte) {
 			}
 			// add to packet
 			if len(Rules.Rules) != 0 {
-				buffNew, matched := metricMatchReplace(buff[offset:offset+size], &Rules)
+				//log.Printf("policy: %s", policy)
+				buffNew, matched, policy := metricMatchReplace(buff[offset:offset+size], &Rules, policy)
+				//log.Printf("policy after: %s", policy)
 				// send replaced metric
 				if matched > 0 {
-					if verbose {
-						log.Printf("Sending %s to %s", buffNew, target)
+					if verbose && policy == "log" {
+						log.Printf("Match %s and %s only", buffNew, policy)
 					}
-					packets[target].Write(buffNew)
-					packets[target].Write(sep)
+					if verbose && policy == "pass" || policy != "drop" {
+						log.Printf("Sending %s to %s", buffNew, target)
+						packets[target].Write(buffNew)
+						packets[target].Write(sep)
+					}
 				} else {
 					// don't send metric if there's no rule match
-					if verbose {
-						log.Printf("No match for %s - skipping", string(metric))
+					if verbose && policy == "drop" || policy == "log" {
+						log.Printf("No match %s and %s", string(metric), policy)
 						numMetricsDropped++
 					}
 				}
 				// send unchanged metric
 			} else {
-				if verbose {
-					log.Printf("Sending %s to %s", metric, target)
+				if verbose && policy == "drop" || policy == "log" {
+					log.Printf("Drop %s to %s", metric, target)
 				}
-				packets[target].Write(buff[offset : offset+size])
-				packets[target].Write(sep)
+				if verbose && policy == "pass" {
+					log.Printf("Sending %s to %s", metric, target)
+					packets[target].Write(buff[offset : offset+size])
+					packets[target].Write(sep)
+				}
 			}
 
 			if mirror != "" {
@@ -616,6 +661,9 @@ func main() {
 	flag.Float64Var(&TCPFactorBackoff, "backoff-factor", 1.5, "Backoff factor (float)")
 	flag.StringVar(&rulesConfig, "rules", "statsrelay.yml", "Config file for statsrelay with matching rules for metrics")
 	flag.StringVar(&rulesConfig, "r", "statsrelay.yml", "Config file for statsrelay with matching rules for metrics")
+
+	flag.StringVar(&defaultPolicy, "default-policy", "drop", "Default rules policy. Options: drop|pass|log")
+	flag.StringVar(&defaultPolicy, "d", "drop", "Default rules policy. Options: drop|pass|log")
 
 	flag.Parse()
 
