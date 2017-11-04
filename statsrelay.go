@@ -632,6 +632,17 @@ func validateHost(address string) (*net.UDPAddr, error) {
 	return addr, err
 }
 
+// validatePolicy() checks if default policy has proper value
+func validatePolicy(policy string) {
+	policies := map[string]bool{
+		"pass": true,
+		"drop": true,
+	}
+	if !policies[policy] {
+		log.Fatal("Policy must equal \"pass\" or \"drop\"")
+	}
+}
+
 func main() {
 	var bindAddress string
 	var port int
@@ -671,8 +682,8 @@ func main() {
 	flag.StringVar(&rulesConfig, "rules", "statsrelay.yml", "Config file for statsrelay with matching rules for metrics")
 	flag.StringVar(&rulesConfig, "r", "statsrelay.yml", "Config file for statsrelay with matching rules for metrics")
 
-	flag.StringVar(&defaultPolicy, "default-policy", "drop", "Default rules policy. Options: drop|pass|log")
-	flag.StringVar(&defaultPolicy, "d", "drop", "Default rules policy. Options: drop|pass|log")
+	flag.StringVar(&defaultPolicy, "default-policy", "drop", "Default rules policy. Options: drop|pass")
+	flag.StringVar(&defaultPolicy, "d", "drop", "Default rules policy. Options: drop|pass")
 
 	flag.Parse()
 
@@ -730,6 +741,8 @@ func main() {
 			hashRing.AddNode(Node{v, ""})
 		}
 	}
+
+	validatePolicy(defaultPolicy)
 
 	epochTime = time.Now().Unix()
 	runServer(bindAddress, port)
