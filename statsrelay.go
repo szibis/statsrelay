@@ -121,11 +121,12 @@ var rulesConfig string
 
 type rulesDef struct {
 	Rules []struct {
-		Name    string   `yaml:"name"`
-		Match   string   `yaml:"match"`
-		Replace string   `yaml:"replace"`
-		Policy  string   `yaml:"policy"`
-		Tags    []string `yaml:"tags"`
+		Name      string   `yaml:"name"`
+		Match     string   `yaml:"match"`
+		Replace   string   `yaml:"replace"`
+		Policy    string   `yaml:"policy"`
+		StopMatch bool     `yaml:"stopmatch"`
+		Tags      []string `yaml:"tags"`
 	} `yaml:"rules"`
 }
 
@@ -154,14 +155,14 @@ func getSockBufferMaxSize() (int, error) {
 	return i, nil
 }
 
-func replacePrint(policy string, match string, replace string, replaced string) {
-	log.Printf("[%s] Match: %s Rule: %s, Replaced: %s, Policy: %s", strings.ToUpper(policy), match, replace, replaced, strings.ToUpper(policy))
+func replacePrint(policy string, match string, replace string, replaced string, matched int) {
+	log.Printf("[%s] MatchRule: %s Rule: %s, Replaced: %s, Match: %d", strings.ToUpper(policy), match, replace, replaced, matched)
 	return
 }
 
 // replaceLogic returns match rule, # of matched rules replace rule,
 // (un)replaced metric, policy and if processing rules should continue
-func replaceLogic(metric string, rMatch string, rReplace string, policy string, rTags []string) (string, int, string, string, string, bool) {
+func replaceLogic(metric string, rMatch string, rReplace string, policy string, rTags []string, rStopMatch bool) (string, int, string, string, string, bool) {
 	var match []string
 	var tagMetric string
 	var matched int
@@ -179,14 +180,16 @@ func replaceLogic(metric string, rMatch string, rReplace string, policy string, 
 	} else {
 		replaced = re.ReplaceAllString(metric, rReplace)
 	}
-
 	if policy == "pass" {
 		if match == nil {
-			return rMatch, matched, rReplace, metric, policy, true
+			return rMatch, matched, rReplace, metric, policy, false
+		}
+		if rStopMatch {
+			return rMatch, matched, rReplace, replaced, policy, true
 		}
 		return rMatch, matched, rReplace, replaced, policy, false
 	} else if policy == "drop" {
-		if match == nil {
+		if rStopMatch && match != nil {
 			return rMatch, matched, rReplace, "", policy, true
 		}
 		return rMatch, matched, rReplace, "", policy, false
@@ -203,15 +206,20 @@ func metricMatchReplace(metric []byte, rules *rulesDef, policyDefault string) ([
 	var policy string
 	var replaced string
 	var matched int
-	var continues bool
+	var stopMatch bool
 	for _, r := range rules.Rules {
 		if r.Policy != "" {
 			policy = r.Policy
 		} else {
 			policy = policyDefault
 		}
-		matchRule, matched, replaceRule, replaced, policy, continues = replaceLogic(string(metric), r.Match, r.Replace, policy, r.Tags)
-		if !continues {
+		if replaced == "" {
+			matchRule, matched, replaceRule, replaced, policy, stopMatch = replaceLogic(string(metric), r.Match, r.Replace, policy, r.Tags, r.StopMatch)
+		} else {
+			matchRule, matched, replaceRule, replaced, policy, stopMatch = replaceLogic(replaced, r.Match, r.Replace, policy, r.Tags, r.StopMatch)
+		}
+
+		if stopMatch {
 			break
 		}
 	}
@@ -220,7 +228,7 @@ func metricMatchReplace(metric []byte, rules *rulesDef, policyDefault string) ([
 		policy = defaultPolicy
 	}
 	if verbose {
-		replacePrint(policy, matchRule, replaceRule, replaced)
+		replacePrint(policy, matchRule, replaceRule, replaced, matched)
 	}
 	return []byte(replaced), matched, policy
 }
@@ -236,11 +244,6 @@ func getMetricName(metric []byte) (string, error) {
 	}
 	return string(metric[:length]), nil
 }
-
-//func splitTags(tags string) []string {
-//	tag := strings.Split(tags, ",")
-//	return tag
-//}
 
 // genTags() add metric []byte and metricTags string, return string
 // of metrics with additional tags
@@ -385,7 +388,7 @@ func handleBuff(buff []byte) {
 				// send replaced metric
 				if matched > 0 {
 					if verbose {
-						log.Printf("Matched %s and policy is %s", metric, strings.ToUpper(policy))
+						//log.Printf("Matched %s and policy is %s", metric, strings.ToUpper(policy))
 						if policy == "pass" {
 							log.Printf("Sending %s to %s", buffNew, target)
 						} else if policy == "drop" {
@@ -702,12 +705,10 @@ func main() {
 
 	if err != nil {
 		log.Fatalf("Error reading rules file: %s \n", err)
-		//viper.SetDefault("rules", "All (.*) pass")
 	}
 
 	if err := viper.Unmarshal(&Rules); err != nil {
 		log.Fatalf("Fatal error loading rules: %s \n", err)
-		//viper.SetDefault("rules", "All (.*) pass")
 	}
 
 	fmt.Printf("%# v\n", pretty.Formatter(Rules))
