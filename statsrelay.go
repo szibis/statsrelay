@@ -691,33 +691,35 @@ func main() {
 	flag.StringVar(&defaultPolicy, "default-policy", "drop", "Default rules policy. Options: drop|pass")
 	flag.StringVar(&defaultPolicy, "d", "drop", "Default rules policy. Options: drop|pass")
 
-	flag.Parse()
-
 	defaultBufferSize, err := getSockBufferMaxSize()
 	if err != nil {
 		defaultBufferSize = 32 * 1024
 	}
 
+	flag.IntVar(&bufferMaxSize, "bufsize", defaultBufferSize, "Read buffer size")
+
+	flag.Parse()
+
 	// viper config rules loading
-	log.Printf("Setting rules config file: %s \n", rulesConfig)
-	viper.SetConfigFile(rulesConfig)
-	viper.AddConfigPath(".")
-	viper.SetConfigType("yaml")
+	if rulesConfig != "" {
+		log.Printf("Setting rules config file: %s \n", rulesConfig)
+		viper.SetConfigFile(rulesConfig)
+		viper.AddConfigPath(".")
+		viper.SetConfigType("yaml")
 
-	err = viper.ReadInConfig()
+		err = viper.ReadInConfig()
 
-	if err != nil {
-		log.Fatalf("Error reading rules file: %s \n", err)
-	}
+		if err != nil {
+			log.Fatalf("Error reading rules file: %s \n", err)
+		}
 
-	if err := viper.Unmarshal(&Rules); err != nil {
-		log.Fatalf("Fatal error loading rules: %s \n", err)
+		if err := viper.Unmarshal(&Rules); err != nil {
+			log.Fatalf("Fatal error loading rules: %s \n", err)
+		}
 	}
 
 	fmt.Printf("%# v\n", pretty.Formatter(Rules))
 	// end viper config for rules
-
-	flag.IntVar(&bufferMaxSize, "bufsize", defaultBufferSize, "Read buffer size")
 
 	if len(flag.Args()) == 0 {
 		log.Fatalf("One or more host specifications are needed to locate statsd daemons.\n")
@@ -737,6 +739,7 @@ func main() {
 	// HOST:PORT:INSTANCE validation
 	if mirror != "" {
 		_, _ = validateHost(mirror)
+		log.Printf("Setting up mirroring to %s", mirror)
 	}
 	for _, v := range flag.Args() {
 		addr, _ := validateHost(v)
