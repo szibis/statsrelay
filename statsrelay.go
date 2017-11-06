@@ -133,8 +133,6 @@ type rulesDef struct {
 // Rules to rules Def
 var Rules rulesDef
 
-//var replaced string
-
 // sockBufferMaxSize() returns the maximum size that the UDP receive buffer
 // in the kernel can be set to.  In bytes.
 func getSockBufferMaxSize() (int, error) {
@@ -155,13 +153,14 @@ func getSockBufferMaxSize() (int, error) {
 	return i, nil
 }
 
+// replacePrint() prints info about matching and replacing metrics and used policy
 func replacePrint(policy string, match string, replace string, replaced string, matched int) {
 	log.Printf("[%s] MatchRule: %s Rule: %s, Replaced: %s, Match: %d", strings.ToUpper(policy), match, replace, replaced, matched)
 	return
 }
 
-// replaceLogic returns match rule, # of matched rules replace rule,
-// (un)replaced metric, policy and if processing rules should continue
+// replaceLogic() returns match rule, # of matched rules, replace rule,
+// (un)replaced metric, policy and if matching against next rules should be stopped
 func replaceLogic(metric string, rMatch string, rReplace string, policy string, rTags []string, rStopMatch bool) (string, int, string, string, string, bool) {
 	var match []string
 	var tagMetric string
@@ -180,26 +179,28 @@ func replaceLogic(metric string, rMatch string, rReplace string, policy string, 
 	} else {
 		replaced = re.ReplaceAllString(metric, rReplace)
 	}
-	if policy == "pass" {
-		if match == nil {
-			return rMatch, matched, rReplace, metric, policy, false
-		}
-		if rStopMatch {
-			return rMatch, matched, rReplace, replaced, policy, true
-		}
-		return rMatch, matched, rReplace, replaced, policy, false
-	} else if policy == "drop" {
+	if policy == "drop" {
+		// drop and stop processing
 		if rStopMatch && match != nil {
 			return rMatch, matched, rReplace, "", policy, true
 		}
+		// go to next rule
 		return rMatch, matched, rReplace, "", policy, false
 	}
-	// same as for policy == pass and match != nil
-	// TODO: clean it up
+	// if policy == pass
+	// send unchanged metrics if no match
+	if match == nil {
+		return rMatch, matched, rReplace, metric, policy, false
+	}
+	// stop processing next rules
+	if rStopMatch {
+		return rMatch, matched, rReplace, replaced, policy, true
+	}
+	// replace and go to next rule
 	return rMatch, matched, rReplace, replaced, policy, false
 }
 
-// matchMetric() match metric based on regexp definition match
+// matchMetric() matches metric based on regexp definition rules
 func metricMatchReplace(metric []byte, rules *rulesDef, policyDefault string) ([]byte, int, string) {
 	var matchRule string
 	var replaceRule string
@@ -215,10 +216,12 @@ func metricMatchReplace(metric []byte, rules *rulesDef, policyDefault string) ([
 		}
 		if replaced == "" {
 			matchRule, matched, replaceRule, replaced, policy, stopMatch = replaceLogic(string(metric), r.Match, r.Replace, policy, r.Tags, r.StopMatch)
+			// if metric was replaced before use it against next rules
 		} else {
 			matchRule, matched, replaceRule, replaced, policy, stopMatch = replaceLogic(replaced, r.Match, r.Replace, policy, r.Tags, r.StopMatch)
 		}
 
+		// don't process next rules
 		if stopMatch {
 			break
 		}
