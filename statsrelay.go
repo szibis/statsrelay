@@ -77,6 +77,9 @@ var verbose bool
 // IP protocol set for sending data target
 var sendproto string
 
+// IP protocol set for sending data target to mirrored statsd original trafic
+var mirrorproto string
+
 // packetLen is the size in bytes of data we stuff into one packet before
 // sending it to statsd. This must be lower than the MTU, IPv4 header size
 // and UDP header size to avoid fragmentation and data loss.
@@ -376,7 +379,7 @@ func handleBuff(buff []byte) {
 			if mirror != "" {
 				// check built packet size and send if metric doesn't fit
 				if mirrorPackets[mirror].Len()+size > packetLen {
-					go sendPacket(mirrorPackets[mirror].Bytes(), mirror, sendproto, TCPtimeout, boff)
+					go sendPacket(mirrorPackets[mirror].Bytes(), mirror, mirrorproto, TCPtimeout, boff)
 					mirrorPackets[mirror].Reset()
 				}
 			}
@@ -481,7 +484,7 @@ func handleBuff(buff []byte) {
 	// Empty out any remaining data
 	if mirror != "" {
 		if mirrorPackets[mirror].Len() > 0 {
-			sendPacket(mirrorPackets[mirror].Bytes(), mirror, sendproto, TCPtimeout, boff)
+			sendPacket(mirrorPackets[mirror].Bytes(), mirror, mirrorproto, TCPtimeout, boff)
 		}
 	}
 	for _, target := range hashRing.Nodes() {
@@ -659,8 +662,10 @@ func main() {
 	flag.StringVar(&bindAddress, "bind", "0.0.0.0", "IP Address to listen on")
 	flag.StringVar(&bindAddress, "b", "0.0.0.0", "IP Address to listen on")
 
-	flag.StringVar(&mirror, "mirror", "", "Address to mirror raw stats (HOST:PORT format)")
-	flag.StringVar(&mirror, "m", "", "Address to mirror raw stats (HOST:PORT format)")
+	flag.StringVar(&mirror, "mirror", "", "Address to mirror (forward) raw stats  (HOST:PORT format)")
+	flag.StringVar(&mirror, "m", "", "Address to mirror (forward) raw stats (HOST:PORT format)")
+
+	flag.StringVar(&mirrorproto, "mirrorproto", "UDP", "IP Protocol for forwarding original data to local statsd: TCP, UDP, or TEST")
 
 	flag.StringVar(&prefix, "prefix", "statsrelay", "The prefix to use with self generated stats")
 	flag.StringVar(&metricsPrefix, "metrics-prefix", "", "The prefix to use with metrics passed through statsrelay")
