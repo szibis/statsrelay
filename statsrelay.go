@@ -438,6 +438,7 @@ func handleBuff(buff []byte) {
 				mirrorPackets[mirror].Write(buff[offset : offset+size])
 				mirrorPackets[mirror].Write(sep)
 				mirrorNumMetrics++
+				log.Printf("[Mirror] Sending %s to %s", buff[offset:offset+size], mirror)
 			}
 			numMetrics++
 			offset = offset + size + 1
