@@ -71,8 +71,11 @@ var totalMetricsLock sync.Mutex
 // Time we began
 var epochTime int64
 
-// Verbose/Debug output
+// Verbose output
 var verbose bool
+
+// Debug output
+var debug bool
 
 // IP protocol set for sending data target
 var sendproto string
@@ -223,7 +226,9 @@ func metricMatchReplace(metric []byte, rules *rulesDef, policyDefault string) ([
 		} else {
 			matchRule, matched, replaceRule, replaced, policy, stopMatch = replaceLogic(replaced, r.Match, r.Replace, policy, r.Tags, r.StopMatch)
 		}
-
+		if debug {
+			replacePrint(policy, matchRule, replaceRule, replaced, matched)
+		}
 		// don't process next rules
 		if stopMatch {
 			break
@@ -233,7 +238,7 @@ func metricMatchReplace(metric []byte, rules *rulesDef, policyDefault string) ([
 	if matched == 0 {
 		policy = defaultPolicy
 	}
-	if verbose {
+	if verbose || debug {
 		replacePrint(policy, matchRule, replaceRule, replaced, matched)
 	}
 	return []byte(replaced), matched, policy
@@ -294,7 +299,7 @@ func sendPacket(buff []byte, target string, sendproto string, TCPtimeout time.Du
 			break
 		}
 	case "TEST":
-		if verbose {
+		if verbose || debug {
 			log.Printf("Debug: Would have sent packet of %d bytes to %s",
 				len(buff), target)
 		}
@@ -393,7 +398,7 @@ func handleBuff(buff []byte) {
 				buffNew, matched, policy := metricMatchReplace(buff[offset:offset+size], &Rules, policy)
 				// send replaced metric
 				if matched > 0 {
-					if verbose {
+					if verbose || debug {
 						//log.Printf("Matched %s and policy is %s", metric, strings.ToUpper(policy))
 						if policy == "pass" {
 							log.Printf("Sending %s to %s", buffNew, target)
@@ -403,7 +408,7 @@ func handleBuff(buff []byte) {
 					}
 				} else {
 					// don't replace metric if there's no rule match
-					if verbose {
+					if verbose || debug {
 						log.Printf("No match for %s and policy is %s", metric, strings.ToUpper(policy))
 						if policy == "pass" {
 							log.Printf("Sending %s to %s", string(metric), target)
@@ -421,12 +426,12 @@ func handleBuff(buff []byte) {
 				// send unchanged metric
 			} else {
 				if policy == "drop" {
-					if verbose {
+					if verbose || debug {
 						log.Printf("Drop %s to %s", metric, target)
 					}
 					numMetricsDropped++
 				} else if policy == "pass" {
-					if verbose {
+					if verbose || debug {
 						log.Printf("Sending %s to %s", metric, target)
 					}
 					packets[target].Write(buff[offset : offset+size])
@@ -501,7 +506,7 @@ func handleBuff(buff []byte) {
 		}
 	}
 
-	if verbose && time.Now().Unix()-epochTime > 0 {
+	if verbose || debug && time.Now().Unix()-epochTime > 0 {
 		log.Printf("Processed %d metrics. Dropped %d metrics. Running total: %d. Metrics/sec: %d\n",
 			numMetrics-numMetricsDropped, numMetricsDropped, totalMetrics,
 			int64(totalMetrics)/(time.Now().Unix()-epochTime))
@@ -553,7 +558,7 @@ func readUDP(ip string, port int, c chan []byte) {
 		log.Printf("Metrics tags set to %s", metricTags)
 	}
 
-	if verbose {
+	if verbose || debug {
 		log.Printf("Rock and Roll!\n")
 	}
 
@@ -677,6 +682,8 @@ func main() {
 
 	flag.BoolVar(&verbose, "verbose", false, "Verbose output")
 	flag.BoolVar(&verbose, "v", false, "Verbose output")
+
+	flag.BoolVar(&debug, "debug", false, "Debug output")
 
 	flag.StringVar(&sendproto, "sendproto", "UDP", "IP Protocol for sending data: TCP, UDP, or TEST")
 	flag.IntVar(&packetLen, "packetlen", 1400, "Max packet length. Must be lower than MTU plus IPv4 and UDP headers to avoid fragmentation.")
