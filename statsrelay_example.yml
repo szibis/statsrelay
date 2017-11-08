@@ -1,23 +1,23 @@
 ---
 rules:
   - name: "test1"
-    match: ^(my_metric).(.*)
-    replace: "testmetric1.$2"
+    match: ^(my_metric).(?P<_all_>.*)
+    replace: "testmetric1.${_all_}"
     policy: "pass"
     stopmatch: false
     tags: []
   - name: "test2"
-    match: ^.*\.(.*)\.(us-east-1)\.(default)\.(helloworld)\.(.*)
-    replace: "statsd.$2.$1.$3.$4.$5"
+    match: ^.*\.(?P<env>.*)\.((?P<region>us-east-1))\.((?P<project>default))\.(?P<appname>helloworld)\.(?P<_all_>.*)
+    replace: "statsd.${region}.${env}.${project}.${appname}.${_all_}"
     policy: "pass"
     stopmatch: true
     tags:
-      - "env:$1"
-      - "region:$2"
-      - "project:$3"
+      - "env:${env}"
+      - "region:${region}"
+      - "project:${project}"
   - name: "test3"
-    match: (.*)
-    replace: "globalprefix.$1"
+    match: (?P<_all_>.*)
+    replace: "globalprefix.${_all_}"
     policy: "pass"
     stopmatch: false
     tags:
