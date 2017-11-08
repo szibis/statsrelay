@@ -77,6 +77,9 @@ var verbose bool
 // Debug output
 var debug bool
 
+// Log-only mode
+var logonly bool
+
 // IP protocol set for sending data target
 var sendproto string
 
@@ -277,26 +280,30 @@ func genTags(metric []byte, metricTags []string, metricReplace string) string {
 func sendPacket(buff []byte, target string, sendproto string, TCPtimeout time.Duration, boff *backoff.Backoff) {
 	switch sendproto {
 	case "UDP":
-		conn, err := net.ListenUDP("udp", nil)
-		if err != nil {
-			log.Panicln(err)
-		}
-		conn.WriteToUDP(buff, udpAddr[target])
-		conn.Close()
-	case "TCP":
-		for i := 0; i < TCPMaxRetries; i++ {
-			conn, err := net.DialTimeout("tcp", target, TCPtimeout)
+		if !logonly {
+			conn, err := net.ListenUDP("udp", nil)
 			if err != nil {
-				doff := boff.Duration()
-				log.Printf("TCP error for %s - %s [Reconnecting in %s, retries left %d/%d]\n",
-					target, err, doff, TCPMaxRetries-i, TCPMaxRetries)
-				time.Sleep(doff)
-				continue
+				log.Panicln(err)
 			}
-			conn.Write(buff)
-			boff.Reset()
-			defer conn.Close()
-			break
+			conn.WriteToUDP(buff, udpAddr[target])
+			conn.Close()
+		}
+	case "TCP":
+		if !logonly {
+			for i := 0; i < TCPMaxRetries; i++ {
+				conn, err := net.DialTimeout("tcp", target, TCPtimeout)
+				if err != nil {
+					doff := boff.Duration()
+					log.Printf("TCP error for %s - %s [Reconnecting in %s, retries left %d/%d]\n",
+						target, err, doff, TCPMaxRetries-i, TCPMaxRetries)
+					time.Sleep(doff)
+					continue
+				}
+				conn.Write(buff)
+				boff.Reset()
+				defer conn.Close()
+				break
+			}
 		}
 	case "TEST":
 		if verbose || debug {
@@ -684,6 +691,9 @@ func main() {
 	flag.BoolVar(&verbose, "v", false, "Verbose output")
 
 	flag.BoolVar(&debug, "debug", false, "Debug output")
+
+	flag.BoolVar(&logonly, "log-only", false, "Log-only mode: doesn't send metrics, just logs the output")
+	flag.BoolVar(&logonly, "l", false, "Log-only mode: doesn't send metrics, just logs the output")
 
 	flag.StringVar(&sendproto, "sendproto", "UDP", "IP Protocol for sending data: TCP, UDP, or TEST")
 	flag.IntVar(&packetLen, "packetlen", 1400, "Max packet length. Must be lower than MTU plus IPv4 and UDP headers to avoid fragmentation.")
