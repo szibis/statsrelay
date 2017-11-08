@@ -160,18 +160,25 @@ func getSockBufferMaxSize() (int, error) {
 }
 
 // replacePrint() prints info about matching and replacing metrics and used policy
-func replacePrint(policy string, match string, replace string, replaced string, matched int) {
-	log.Printf("[%s] MatchRule: %s Rule: %s, Replaced: %s, Match: %d", strings.ToUpper(policy), match, replace, replaced, matched)
+func replacePrint(policy string, match string, replace string, replaced string, matched int, elapsed time.Duration) {
+	log.Printf("[%s] MatchRule: %s Rule: %s, Final: %s, Match: %d in [%s]", strings.ToUpper(policy), match, replace, replaced, matched, elapsed)
+	return
+}
+
+// replaceSumPrint() prints summary info about matching and replacing metrics and used policy
+func replaceSumPrint(policy string, ruleNames []string, replaced string, matches int, elapsed time.Duration) {
+	log.Printf("[%s] Rule Names: %s Final: %s, Matches: %d in [%s]", strings.ToUpper(policy), ruleNames, replaced, matches, elapsed)
 	return
 }
 
 // replaceLogic() returns match rule, # of matched rules, replace rule,
 // (un)replaced metric, policy and if matching against next rules should be stopped
-func replaceLogic(metric string, rMatch string, rReplace string, policy string, rTags []string, rStopMatch bool) (string, int, string, string, string, bool) {
+func replaceLogic(metric string, rMatch string, rReplace string, policy string, rTags []string, rStopMatch bool) (string, int, string, string, string, time.Duration, bool) {
 	var match []string
 	var tagMetric string
 	var matched int
 	var replaced string
+	start := time.Now()
 	re := regexp.MustCompile(rMatch)
 	match = re.FindAllString(metric, -1)
 	if match != nil {
@@ -185,35 +192,39 @@ func replaceLogic(metric string, rMatch string, rReplace string, policy string, 
 	} else {
 		replaced = re.ReplaceAllString(metric, rReplace)
 	}
+	elapsed := time.Since(start)
 	if policy == "drop" {
 		// drop and stop processing
 		if rStopMatch && match != nil {
-			return rMatch, matched, rReplace, "", policy, true
+			return rMatch, matched, rReplace, "", policy, elapsed, true
 		}
 		// go to next rule
-		return rMatch, matched, rReplace, "", policy, false
+		return rMatch, matched, rReplace, "", policy, elapsed, false
 	}
 	// if policy == pass
 	// send unchanged metrics if no match
 	if match == nil {
-		return rMatch, matched, rReplace, metric, policy, false
+		return rMatch, matched, rReplace, metric, policy, elapsed, false
 	}
 	// stop processing next rules
 	if rStopMatch {
-		return rMatch, matched, rReplace, replaced, policy, true
+		return rMatch, matched, rReplace, replaced, policy, elapsed, true
 	}
 	// replace and go to next rule
-	return rMatch, matched, rReplace, replaced, policy, false
+	return rMatch, matched, rReplace, replaced, policy, elapsed, false
 }
 
-// matchMetric() matches metric based on regexp definition rules
+// metricMatchReplace() matches metric based on regexp definition rules
 func metricMatchReplace(metric []byte, rules *rulesDef, policyDefault string) ([]byte, int, string) {
 	var matchRule string
 	var replaceRule string
 	var policy string
 	var replaced string
-	var matched int
+	var matched int = 0
 	var stopMatch bool
+	var sumElapsed time.Duration
+	ruleNames := make([]string, 0)
+	var elapsed time.Duration
 	for _, r := range rules.Rules {
 		if r.Policy != "" {
 			policy = r.Policy
@@ -221,13 +232,21 @@ func metricMatchReplace(metric []byte, rules *rulesDef, policyDefault string) ([
 			policy = policyDefault
 		}
 		if replaced == "" {
-			matchRule, matched, replaceRule, replaced, policy, stopMatch = replaceLogic(string(metric), r.Match, r.Replace, policy, r.Tags, r.StopMatch)
+			matchRule, matched, replaceRule, replaced, policy, elapsed, stopMatch = replaceLogic(string(metric), r.Match, r.Replace, policy, r.Tags, r.StopMatch)
+			if matched != 0 {
+				ruleNames = append(ruleNames, r.Name)
+			}
 			// if metric was replaced before use it against next rules
 		} else {
-			matchRule, matched, replaceRule, replaced, policy, stopMatch = replaceLogic(replaced, r.Match, r.Replace, policy, r.Tags, r.StopMatch)
+			matchRule, matched, replaceRule, replaced, policy, elapsed, stopMatch = replaceLogic(replaced, r.Match, r.Replace, policy, r.Tags, r.StopMatch)
+			if matched != 0 {
+				ruleNames = append(ruleNames, r.Name)
+			}
 		}
+		sumElapsed = sumElapsed + elapsed
 		if debug {
-			replacePrint(policy, matchRule, replaceRule, replaced, matched)
+			// per match log info
+			replacePrint(policy, matchRule, replaceRule, replaced, len(ruleNames), elapsed)
 		}
 		// don't process next rules
 		if stopMatch {
@@ -239,9 +258,10 @@ func metricMatchReplace(metric []byte, rules *rulesDef, policyDefault string) ([
 		policy = defaultPolicy
 	}
 	if verbose || debug {
-		replacePrint(policy, matchRule, replaceRule, replaced, matched)
+		// summary log info per metric with all matches and replaces
+		replaceSumPrint(policy, ruleNames, replaced, len(ruleNames), sumElapsed)
 	}
-	return []byte(replaced), matched, policy
+	return []byte(replaced), len(ruleNames), policy
 }
 
 // getMetricName() parses the given []byte metric as a string, extracts
@@ -327,6 +347,7 @@ func buildPacketMap() map[string]*bytes.Buffer {
 // handleBuff() sorts through a full buffer of metrics and batches metrics
 // to remote statsd daemons using a consistent hash.
 func handleBuff(buff []byte) {
+	handleStart := time.Now()
 	packets := buildPacketMap()
 	mirrorPackets := make(map[string]*bytes.Buffer)
 	if mirror != "" {
@@ -506,9 +527,11 @@ func handleBuff(buff []byte) {
 		}
 	}
 
+	handleElapsed := time.Since(handleStart)
+
 	if verbose || debug && time.Now().Unix()-epochTime > 0 {
-		log.Printf("Processed %d metrics. Dropped %d metrics. Running total: %d. Metrics/sec: %d\n",
-			numMetrics-numMetricsDropped, numMetricsDropped, totalMetrics,
+		log.Printf("Processed %d metrics in %s. Dropped %d metrics. Running total: %d. Metrics/sec: %d\n",
+			numMetrics-numMetricsDropped, handleElapsed, numMetricsDropped, totalMetrics,
 			int64(totalMetrics)/(time.Now().Unix()-epochTime))
 	}
 }
