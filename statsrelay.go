@@ -23,6 +23,7 @@ import (
 	"github.com/jpillora/backoff"
 	"github.com/kr/pretty"
 	"github.com/spf13/viper"
+	"gopkg.in/go-playground/validator.v9"
 )
 
 const VERSION string = "0.0.7"
@@ -128,19 +129,25 @@ var defaultPolicy string
 // rulesConfig string value for config file name with match rules
 var rulesConfig string
 
+// testRulesConfig bool value for testing rules config validity
+var rulesValidationTest bool
+
 type rulesDef struct {
 	Rules []struct {
-		Name      string   `mapstructure:"name"`
-		Match     string   `mapstructure:"match"`
-		Replace   string   `mapstructure:"replace"`
-		Policy    string   `mapstructure:"policy"`
-		StopMatch bool     `mapstructure:"stop_match"`
-		Tags      []string `mapstructure:"tags"`
+		Name      string   `mapstructure:"name" validate:"required,alphanum,gt=0"`
+		Match     string   `mapstructure:"match" validate:"required,gt=0"`
+		Replace   string   `mapstructure:"replace" validate:"-"`
+		Policy    string   `mapstructure:"policy" validate:"eq=pass|eq=drop"`
+		StopMatch bool     `mapstructure:"stop_match" validate:"-"`
+		Tags      []string `mapstructure:"tags" validate:"unique"`
 	} `mapstructure:"rules"`
 }
 
 // Rules to rules Def
 var Rules rulesDef
+
+// use a single instance of Validate, it caches struct info
+var validate *validator.Validate
 
 // sockBufferMaxSize() returns the maximum size that the UDP receive buffer
 // in the kernel can be set to.  In bytes.
@@ -688,6 +695,41 @@ func validatePolicy(policy string) {
 	}
 }
 
+// validateRules() checks every field in rules definition for its validity
+func validateRules(rulesConfig string) []error {
+	var rulesValidator rulesDef
+	var rulesErrors []error
+
+	validate = validator.New()
+
+	rules := viper.New()
+	rules.SetConfigFile(rulesConfig)
+	rules.AddConfigPath(".")
+	rules.SetConfigType("yaml")
+
+	err := rules.ReadInConfig()
+	if err != nil {
+		log.Fatalf("Fatal error wile reading rules config: %s\n", err)
+	}
+
+	err = rules.Unmarshal(&rulesValidator)
+	if err != nil {
+		log.Fatalf("Fatal error while loading rules: %s\n", err)
+	}
+
+	for _, r := range rulesValidator.Rules {
+		err := validate.Struct(r)
+		if err != nil {
+			rulesErrors = append(rulesErrors, err)
+			fmt.Println(err)
+			if _, ok := err.(*validator.InvalidValidationError); ok {
+				fmt.Println(err)
+			}
+		}
+	}
+	return rulesErrors
+}
+
 func main() {
 	var bindAddress string
 	var port int
@@ -731,8 +773,11 @@ func main() {
 	flag.DurationVar(&TCPMinBackoff, "backoff-min", 50*time.Millisecond, "Backoff minimal (integer) time in Millisecond")
 	flag.DurationVar(&TCPMaxBackoff, "backoff-max", 1000*time.Millisecond, "Backoff maximal (integer) time in Millisecond")
 	flag.Float64Var(&TCPFactorBackoff, "backoff-factor", 1.5, "Backoff factor (float)")
+
 	flag.StringVar(&rulesConfig, "rules", "statsrelay.yml", "Config file for statsrelay with matching rules for metrics")
 	flag.StringVar(&rulesConfig, "r", "statsrelay.yml", "Config file for statsrelay with matching rules for metrics")
+
+	flag.BoolVar(&rulesValidationTest, "validate-rules", false, "Validates rules configuration and exits")
 
 	flag.StringVar(&defaultPolicy, "default-policy", "drop", "Default rules policy. Options: drop|pass")
 	flag.StringVar(&defaultPolicy, "d", "drop", "Default rules policy. Options: drop|pass")
@@ -748,6 +793,16 @@ func main() {
 
 	// viper config rules loading
 	if rulesConfig != "" {
+		rulesErrors := validateRules(rulesConfig)
+
+		if len(rulesErrors) > 0 {
+			log.Fatalln("Fix above errors in your rules config!")
+		}
+		if rulesValidationTest {
+			log.Println("All rules are ok!")
+			os.Exit(0)
+		}
+
 		log.Printf("Setting rules config file: %s \n", rulesConfig)
 		viper.SetConfigFile(rulesConfig)
 		viper.AddConfigPath(".")
@@ -762,10 +817,9 @@ func main() {
 		if err := viper.Unmarshal(&Rules); err != nil {
 			log.Fatalf("Fatal error loading rules: %s \n", err)
 		}
-	}
 
-	fmt.Printf("%# v\n", pretty.Formatter(Rules))
-	// end viper config for rules
+		fmt.Printf("%# v\n", pretty.Formatter(Rules))
+	}
 
 	if len(flag.Args()) == 0 {
 		log.Fatalf("One or more host specifications are needed to locate statsd daemons.\n")
