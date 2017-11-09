@@ -686,19 +686,17 @@ func validateHost(address string) (*net.UDPAddr, error) {
 
 // validatePolicy() checks if default policy has proper value
 func validatePolicy(policy string) {
-	policies := map[string]bool{
-		"pass": true,
-		"drop": true,
-	}
-	if !policies[policy] {
+	err := validate.Var(policy, "eq=pass|eq=drop")
+	if err != nil {
 		log.Fatal("Policy must equal \"pass\" or \"drop\"")
 	}
 }
 
 // validateRules() checks every field in rules definition for its validity
-func validateRules(rulesConfig string) []error {
+func validateRules(rulesConfig string) map[string][]string {
 	var rulesValidator rulesDef
-	var rulesErrors []error
+	// keep slice of errors for each rule
+	rulesErrors := make(map[string][]string)
 
 	validate = validator.New()
 
@@ -720,11 +718,19 @@ func validateRules(rulesConfig string) []error {
 	for _, r := range rulesValidator.Rules {
 		err := validate.Struct(r)
 		if err != nil {
-			rulesErrors = append(rulesErrors, err)
-			fmt.Println(err)
 			if _, ok := err.(*validator.InvalidValidationError); ok {
 				fmt.Println(err)
 			}
+			var errorArr []string
+			for _, err := range err.(validator.ValidationErrors) {
+				// field - which field is wrong configured
+				// validation - validation rule
+				// value - current value
+				errorMsg := fmt.Sprintf("field=%s validation=%s value=%s",
+					err.Namespace(), err.Tag(), err.Value())
+				errorArr = append(errorArr, errorMsg)
+			}
+			rulesErrors[r.Name] = errorArr
 		}
 	}
 	return rulesErrors
@@ -794,9 +800,16 @@ func main() {
 	// viper config rules loading
 	if rulesConfig != "" {
 		rulesErrors := validateRules(rulesConfig)
-
+		// log misconfigured rules
 		if len(rulesErrors) > 0 {
-			log.Fatalln("Fix above errors in your rules config!")
+			log.Println("Rules config has errors. Fix below rule definitions:")
+			for ruleName, errors := range rulesErrors {
+				log.Printf("\tRule: %s\n", ruleName)
+				for _, err := range errors {
+					log.Printf("\t\t %s\n", err)
+				}
+			}
+			os.Exit(len(rulesErrors))
 		}
 		if rulesValidationTest {
 			log.Println("All rules are ok!")
