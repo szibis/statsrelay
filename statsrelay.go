@@ -130,13 +130,13 @@ var rulesConfig string
 
 type rulesDef struct {
 	Rules []struct {
-		Name      string   `yaml:"name"`
-		Match     string   `yaml:"match"`
-		Replace   string   `yaml:"replace"`
-		Policy    string   `yaml:"policy"`
-		StopMatch bool     `yaml:"stopmatch"`
-		Tags      []string `yaml:"tags"`
-	} `yaml:"rules"`
+		Name      string   `mapstructure:"name"`
+		Match     string   `mapstructure:"match"`
+		Replace   string   `mapstructure:"replace"`
+		Policy    string   `mapstructure:"policy"`
+		StopMatch bool     `mapstructure:"stop_match"`
+		Tags      []string `mapstructure:"tags"`
+	} `mapstructure:"rules"`
 }
 
 // Rules to rules Def
