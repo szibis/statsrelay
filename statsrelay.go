@@ -27,6 +27,7 @@ import (
 	"gopkg.in/go-playground/validator.v9"
 )
 
+// VERSION shows statsrelay version
 const VERSION string = "0.0.7"
 
 // BUFFERSIZE controls the size of the [...]byte array used to read UDP data
@@ -65,7 +66,7 @@ var mirror string
 var hashRing = NewJumpHashRing(1)
 
 // totalMetrics tracks the totall number of metrics processed
-var totalMetrics int = 0
+var totalMetrics int
 
 // totalMetricsLock is a mutex gaurding totalMetrics
 var totalMetricsLock sync.Mutex
@@ -234,7 +235,7 @@ func metricMatchReplace(metric []byte, rules *rulesDef, policyDefault string) ([
 	var replaceRule string
 	var policy string
 	var replaced string
-	var matched int = 0
+	var matched int
 	var stopMatch bool
 	var sumElapsed time.Duration
 	ruleNames := make([]string, 0)
@@ -637,11 +638,11 @@ func readUDP(ip string, port int, c chan []byte) {
 // runServer() runs and manages this daemon, deals with OS signals, and handles
 // communication channels.
 func runServer(host string, port int) {
-	var c chan []byte = make(chan []byte, 256)
+	var c = make(chan []byte, 256)
 	// Set up channel on which to send signal notifications.
 	// We must use a buffered channel or risk missing the signal
 	// if we're not ready to receive when the signal is sent.
-	var sig chan os.Signal = make(chan os.Signal, 1)
+	var sig = make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, os.Kill, syscall.SIGTERM)
 
 	// read incoming UDP packets
