@@ -12,6 +12,7 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -698,7 +699,7 @@ func validatePolicy(policy string) {
 }
 
 // validateRules() checks every field in rules definition for its validity
-func validateRules(rulesConfig string, exitOnErrors bool) map[string][]string {
+func validateRules(rulesFile string, rulesDir string, exitOnErrors bool) map[string][]string {
 	var rulesValidator rulesDef
 	// keep slice of errors for each rule
 	rulesErrors := make(map[string][]string)
@@ -706,8 +707,8 @@ func validateRules(rulesConfig string, exitOnErrors bool) map[string][]string {
 	validate = validator.New()
 
 	rules := viper.New()
-	rules.SetConfigFile(rulesConfig)
-	rules.AddConfigPath(".")
+	rules.SetConfigName(strings.Split(rulesFile, ".")[0])
+	rules.AddConfigPath(rulesDir)
 	rules.SetConfigType("yaml")
 
 	err := rules.ReadInConfig()
@@ -798,8 +799,8 @@ func main() {
 	flag.DurationVar(&TCPMaxBackoff, "backoff-max", 1000*time.Millisecond, "Backoff maximal (integer) time in Millisecond")
 	flag.Float64Var(&TCPFactorBackoff, "backoff-factor", 1.5, "Backoff factor (float)")
 
-	flag.StringVar(&rulesConfig, "rules", "statsrelay.yml", "Config file for statsrelay with matching rules for metrics")
-	flag.StringVar(&rulesConfig, "r", "statsrelay.yml", "Config file for statsrelay with matching rules for metrics")
+	flag.StringVar(&rulesConfig, "rules", "", "Config file for statsrelay with matching rules for metrics")
+	flag.StringVar(&rulesConfig, "r", "", "Config file for statsrelay with matching rules for metrics")
 
 	flag.BoolVar(&rulesValidationTest, "validate-rules", false, "Validates rules configuration and exits")
 
@@ -819,17 +820,24 @@ func main() {
 
 	// viper config rules loading
 	if rulesConfig != "" {
+		validatePolicy(defaultPolicy)
+
+		// get the config name
+		rulesFile := filepath.Base(rulesConfig)
+		// get the path
+		rulesDir := filepath.Dir(rulesConfig)
+
 		// validate and exit in case of errors
-		validateRules(rulesConfig, true)
+		validateRules(rulesFile, rulesDir, true)
 		if rulesValidationTest {
 			log.Printf("All rules in %s are correct.\n", rulesConfig)
 			os.Exit(0)
 		}
 
 		log.Printf("Setting rules config file: %s \n", rulesConfig)
-		viper.SetConfigFile(rulesConfig)
-		viper.AddConfigPath(".")
 		viper.SetConfigType("yaml")
+		viper.SetConfigName(strings.Split(rulesFile, ".")[0])
+		viper.AddConfigPath(rulesDir)
 
 		err = viper.ReadInConfig()
 		if err != nil {
@@ -848,7 +856,7 @@ func main() {
 			viper.OnConfigChange(func(e fsnotify.Event) {
 				log.Println("Config file changed:", e.Name)
 				// reread config if no errors, use old config otherwise
-				if len(validateRules(rulesConfig, false)) == 0 {
+				if len(validateRules(rulesFile, rulesDir, false)) == 0 {
 					err := viper.Unmarshal(&Rules)
 					if err != nil {
 						log.Fatalf("Fatal error loading rules: %s \n", err)
@@ -891,11 +899,8 @@ func main() {
 		}
 	}
 
-	validatePolicy(defaultPolicy)
-
 	epochTime = time.Now().Unix()
 	runServer(bindAddress, port)
 
 	log.Printf("Normal shutdown.\n")
-
 }
