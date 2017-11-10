@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/jpillora/backoff"
 	"github.com/kr/pretty"
 	"github.com/spf13/viper"
@@ -131,6 +132,9 @@ var rulesConfig string
 
 // testRulesConfig bool value for testing rules config validity
 var rulesValidationTest bool
+
+// watchRulesConfig bool value for enabling watching config changes and reloading runtime values
+var watchRulesConfig bool
 
 type rulesDef struct {
 	Rules []struct {
@@ -693,7 +697,7 @@ func validatePolicy(policy string) {
 }
 
 // validateRules() checks every field in rules definition for its validity
-func validateRules(rulesConfig string) map[string][]string {
+func validateRules(rulesConfig string, exitOnErrors bool) map[string][]string {
 	var rulesValidator rulesDef
 	// keep slice of errors for each rule
 	rulesErrors := make(map[string][]string)
@@ -731,6 +735,19 @@ func validateRules(rulesConfig string) map[string][]string {
 				errorArr = append(errorArr, errorMsg)
 			}
 			rulesErrors[r.Name] = errorArr
+		}
+	}
+	// log misconfigured rules
+	if len(rulesErrors) > 0 {
+		log.Println("Rules config has errors. Fix below rule definitions:")
+		for ruleName, errors := range rulesErrors {
+			log.Printf("\tRule: %s\n", ruleName)
+			for _, err := range errors {
+				log.Printf("\t\t %s\n", err)
+			}
+		}
+		if exitOnErrors {
+			os.Exit(len(rulesErrors))
 		}
 	}
 	return rulesErrors
@@ -785,6 +802,8 @@ func main() {
 
 	flag.BoolVar(&rulesValidationTest, "validate-rules", false, "Validates rules configuration and exits")
 
+	flag.BoolVar(&watchRulesConfig, "watch-rules", false, "Watches for rules config changes and updates runtime values")
+
 	flag.StringVar(&defaultPolicy, "default-policy", "drop", "Default rules policy. Options: drop|pass")
 	flag.StringVar(&defaultPolicy, "d", "drop", "Default rules policy. Options: drop|pass")
 
@@ -799,20 +818,10 @@ func main() {
 
 	// viper config rules loading
 	if rulesConfig != "" {
-		rulesErrors := validateRules(rulesConfig)
-		// log misconfigured rules
-		if len(rulesErrors) > 0 {
-			log.Println("Rules config has errors. Fix below rule definitions:")
-			for ruleName, errors := range rulesErrors {
-				log.Printf("\tRule: %s\n", ruleName)
-				for _, err := range errors {
-					log.Printf("\t\t %s\n", err)
-				}
-			}
-			os.Exit(len(rulesErrors))
-		}
+		// validate and exit in case of errors
+		validateRules(rulesConfig, true)
 		if rulesValidationTest {
-			log.Println("All rules are ok!")
+			log.Printf("All rules in %s are correct.\n", rulesConfig)
 			os.Exit(0)
 		}
 
@@ -822,16 +831,35 @@ func main() {
 		viper.SetConfigType("yaml")
 
 		err = viper.ReadInConfig()
-
 		if err != nil {
 			log.Fatalf("Error reading rules file: %s \n", err)
 		}
-
 		if err := viper.Unmarshal(&Rules); err != nil {
 			log.Fatalf("Fatal error loading rules: %s \n", err)
 		}
+		if verbose {
+			pretty.Println(Rules)
+		}
 
-		fmt.Printf("%# v\n", pretty.Formatter(Rules))
+		// config watch and live reload
+		if watchRulesConfig {
+			viper.WatchConfig()
+			viper.OnConfigChange(func(e fsnotify.Event) {
+				log.Println("Config file changed:", e.Name)
+				// reread config if no errors, use old config otherwise
+				if len(validateRules(rulesConfig, false)) == 0 {
+					err := viper.Unmarshal(&Rules)
+					if err != nil {
+						log.Fatalf("Fatal error loading rules: %s \n", err)
+					}
+					if verbose {
+						pretty.Println(Rules)
+					}
+				} else {
+					log.Println("Using old rules config. Fix above errors to apply new config.")
+				}
+			})
+		}
 	}
 
 	if len(flag.Args()) == 0 {
