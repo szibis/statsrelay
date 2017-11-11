@@ -692,6 +692,7 @@ func validateHost(address string) (*net.UDPAddr, error) {
 
 // validatePolicy() checks if default policy has proper value
 func validatePolicy(policy string) {
+	validate := validator.New()
 	err := validate.Var(policy, "eq=pass|eq=drop")
 	if err != nil {
 		log.Fatal("Policy must equal \"pass\" or \"drop\"")
