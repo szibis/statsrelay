@@ -140,7 +140,7 @@ var watchRulesConfig bool
 
 type rulesDef struct {
 	Rules []struct {
-		Name      string   `mapstructure:"name" validate:"required,alphanum,gt=0"`
+		Name      string   `mapstructure:"name" validate:"required,gt=0"`
 		Match     string   `mapstructure:"match" validate:"required,gt=0"`
 		Replace   string   `mapstructure:"replace" validate:"-"`
 		Policy    string   `mapstructure:"policy" validate:"eq=pass|eq=drop"`
