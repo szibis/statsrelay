@@ -12,6 +12,7 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -20,11 +21,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/jpillora/backoff"
 	"github.com/kr/pretty"
 	"github.com/spf13/viper"
+	"gopkg.in/go-playground/validator.v9"
 )
 
+// VERSION shows statsrelay version
 const VERSION string = "0.0.7"
 
 // BUFFERSIZE controls the size of the [...]byte array used to read UDP data
@@ -63,7 +67,7 @@ var mirror string
 var hashRing = NewJumpHashRing(1)
 
 // totalMetrics tracks the totall number of metrics processed
-var totalMetrics int = 0
+var totalMetrics int
 
 // totalMetricsLock is a mutex gaurding totalMetrics
 var totalMetricsLock sync.Mutex
@@ -128,19 +132,28 @@ var defaultPolicy string
 // rulesConfig string value for config file name with match rules
 var rulesConfig string
 
+// testRulesConfig bool value for testing rules config validity
+var rulesValidationTest bool
+
+// watchRulesConfig bool value for enabling watching config changes and reloading runtime values
+var watchRulesConfig bool
+
 type rulesDef struct {
 	Rules []struct {
-		Name      string   `yaml:"name"`
-		Match     string   `yaml:"match"`
-		Replace   string   `yaml:"replace"`
-		Policy    string   `yaml:"policy"`
-		StopMatch bool     `yaml:"stopmatch"`
-		Tags      []string `yaml:"tags"`
-	} `yaml:"rules"`
+		Name      string   `mapstructure:"name" validate:"required,gt=0"`
+		Match     string   `mapstructure:"match" validate:"required,gt=0"`
+		Replace   string   `mapstructure:"replace" validate:"-"`
+		Policy    string   `mapstructure:"policy" validate:"eq=pass|eq=drop"`
+		StopMatch bool     `mapstructure:"stop_match" validate:"-"`
+		Tags      []string `mapstructure:"tags" validate:"unique"`
+	} `mapstructure:"rules"`
 }
 
 // Rules to rules Def
 var Rules rulesDef
+
+// use a single instance of Validate, it caches struct info
+var validate *validator.Validate
 
 // sockBufferMaxSize() returns the maximum size that the UDP receive buffer
 // in the kernel can be set to.  In bytes.
@@ -223,7 +236,7 @@ func metricMatchReplace(metric []byte, rules *rulesDef, policyDefault string) ([
 	var replaceRule string
 	var policy string
 	var replaced string
-	var matched int = 0
+	var matched int
 	var stopMatch bool
 	var sumElapsed time.Duration
 	ruleNames := make([]string, 0)
@@ -626,11 +639,11 @@ func readUDP(ip string, port int, c chan []byte) {
 // runServer() runs and manages this daemon, deals with OS signals, and handles
 // communication channels.
 func runServer(host string, port int) {
-	var c chan []byte = make(chan []byte, 256)
+	var c = make(chan []byte, 256)
 	// Set up channel on which to send signal notifications.
 	// We must use a buffered channel or risk missing the signal
 	// if we're not ready to receive when the signal is sent.
-	var sig chan os.Signal = make(chan os.Signal, 1)
+	var sig = make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, os.Kill, syscall.SIGTERM)
 
 	// read incoming UDP packets
@@ -679,13 +692,68 @@ func validateHost(address string) (*net.UDPAddr, error) {
 
 // validatePolicy() checks if default policy has proper value
 func validatePolicy(policy string) {
-	policies := map[string]bool{
-		"pass": true,
-		"drop": true,
-	}
-	if !policies[policy] {
+	validate := validator.New()
+	err := validate.Var(policy, "eq=pass|eq=drop")
+	if err != nil {
 		log.Fatal("Policy must equal \"pass\" or \"drop\"")
 	}
+}
+
+// validateRules() checks every field in rules definition for its validity
+func validateRules(rulesFile string, rulesDir string, exitOnErrors bool) map[string][]string {
+	var rulesValidator rulesDef
+	// keep slice of errors for each rule
+	rulesErrors := make(map[string][]string)
+
+	validate = validator.New()
+
+	rules := viper.New()
+	rules.SetConfigName(strings.Split(rulesFile, ".")[0])
+	rules.AddConfigPath(rulesDir)
+	rules.SetConfigType("yaml")
+
+	err := rules.ReadInConfig()
+	if err != nil {
+		log.Fatalf("Fatal error wile reading rules config: %s\n", err)
+	}
+
+	err = rules.Unmarshal(&rulesValidator)
+	if err != nil {
+		log.Fatalf("Fatal error while loading rules: %s\n", err)
+	}
+
+	for _, r := range rulesValidator.Rules {
+		err := validate.Struct(r)
+		if err != nil {
+			if _, ok := err.(*validator.InvalidValidationError); ok {
+				fmt.Println(err)
+			}
+			var errorArr []string
+			for _, err := range err.(validator.ValidationErrors) {
+				// field - which field is wrong configured
+				// validation - validation rule
+				// value - current value
+				errorMsg := fmt.Sprintf("field=%s validation=%s value=%s",
+					err.Namespace(), err.Tag(), err.Value())
+				errorArr = append(errorArr, errorMsg)
+			}
+			rulesErrors[r.Name] = errorArr
+		}
+	}
+	// log misconfigured rules
+	if len(rulesErrors) > 0 {
+		log.Println("Rules config has errors. Fix below rule definitions:")
+		for ruleName, errors := range rulesErrors {
+			log.Printf("\tRule: %s\n", ruleName)
+			for _, err := range errors {
+				log.Printf("\t\t %s\n", err)
+			}
+		}
+		if exitOnErrors {
+			os.Exit(len(rulesErrors))
+		}
+	}
+	return rulesErrors
 }
 
 func main() {
@@ -731,8 +799,13 @@ func main() {
 	flag.DurationVar(&TCPMinBackoff, "backoff-min", 50*time.Millisecond, "Backoff minimal (integer) time in Millisecond")
 	flag.DurationVar(&TCPMaxBackoff, "backoff-max", 1000*time.Millisecond, "Backoff maximal (integer) time in Millisecond")
 	flag.Float64Var(&TCPFactorBackoff, "backoff-factor", 1.5, "Backoff factor (float)")
-	flag.StringVar(&rulesConfig, "rules", "statsrelay.yml", "Config file for statsrelay with matching rules for metrics")
-	flag.StringVar(&rulesConfig, "r", "statsrelay.yml", "Config file for statsrelay with matching rules for metrics")
+
+	flag.StringVar(&rulesConfig, "rules", "", "Config file for statsrelay with matching rules for metrics")
+	flag.StringVar(&rulesConfig, "r", "", "Config file for statsrelay with matching rules for metrics")
+
+	flag.BoolVar(&rulesValidationTest, "validate-rules", false, "Validates rules configuration and exits")
+
+	flag.BoolVar(&watchRulesConfig, "watch-rules", false, "Watches for rules config changes and updates runtime values")
 
 	flag.StringVar(&defaultPolicy, "default-policy", "drop", "Default rules policy. Options: drop|pass")
 	flag.StringVar(&defaultPolicy, "d", "drop", "Default rules policy. Options: drop|pass")
@@ -748,24 +821,61 @@ func main() {
 
 	// viper config rules loading
 	if rulesConfig != "" {
+		validatePolicy(defaultPolicy)
+
+		// get the config name
+		rulesFile := filepath.Base(rulesConfig)
+		// get the path
+		rulesDir := filepath.Dir(rulesConfig)
+
+		// validate and exit in case of errors
+		validateRules(rulesFile, rulesDir, true)
+		if rulesValidationTest {
+			log.Printf("All rules in %s are correct.\n", rulesConfig)
+			os.Exit(0)
+		}
+
 		log.Printf("Setting rules config file: %s \n", rulesConfig)
-		viper.SetConfigFile(rulesConfig)
-		viper.AddConfigPath(".")
 		viper.SetConfigType("yaml")
+		viper.SetConfigName(strings.Split(rulesFile, ".")[0])
+		viper.AddConfigPath(rulesDir)
 
 		err = viper.ReadInConfig()
-
 		if err != nil {
 			log.Fatalf("Error reading rules file: %s \n", err)
 		}
-
 		if err := viper.Unmarshal(&Rules); err != nil {
 			log.Fatalf("Fatal error loading rules: %s \n", err)
 		}
-	}
+		if verbose {
+			pretty.Println(Rules)
+		}
 
-	fmt.Printf("%# v\n", pretty.Formatter(Rules))
-	// end viper config for rules
+		// config watch and live reload
+		if watchRulesConfig {
+			viper.WatchConfig()
+			viper.OnConfigChange(func(e fsnotify.Event) {
+				log.Println("Config file changed:", e.Name)
+				// reread config if no errors, use old config otherwise
+				if len(validateRules(rulesFile, rulesDir, false)) == 0 {
+					// create temporary variable for assigning its value to main Rules
+					// needed in case when unmarshal fails and we don't want to sacrifice
+					// our current rules
+					tmpRules := rulesDef{}
+					err := viper.Unmarshal(&tmpRules)
+					if err != nil {
+						log.Fatalf("Fatal error loading rules: %s \n", err)
+					}
+					Rules = tmpRules
+					if verbose {
+						pretty.Println(Rules)
+					}
+				} else {
+					log.Println("Using old rules config. Fix above errors to apply new config.")
+				}
+			})
+		}
+	}
 
 	if len(flag.Args()) == 0 {
 		log.Fatalf("One or more host specifications are needed to locate statsd daemons.\n")
@@ -795,11 +905,8 @@ func main() {
 		}
 	}
 
-	validatePolicy(defaultPolicy)
-
 	epochTime = time.Now().Unix()
 	runServer(bindAddress, port)
 
 	log.Printf("Normal shutdown.\n")
-
 }

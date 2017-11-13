@@ -1,3 +1,7 @@
 package: github.com/jjneely/statsrelay
 imports:
 - package: github.com/jpillora/backoff
+- package: github.com/kr/pretty
+- package: github.com/spf13/viper
+- package: gopkg.in/go-playground/validator.v9
+- package: github.com/fsnotify/fsnotify
