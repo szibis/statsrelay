@@ -858,10 +858,15 @@ func main() {
 				log.Println("Config file changed:", e.Name)
 				// reread config if no errors, use old config otherwise
 				if len(validateRules(rulesFile, rulesDir, false)) == 0 {
-					err := viper.Unmarshal(&Rules)
+					// create temporary variable for assigning its value to main Rules
+					// needed in case when unmarshal fails and we don't want to sacrifice
+					// our current rules
+					tmpRules := rulesDef{}
+					err := viper.Unmarshal(&tmpRules)
 					if err != nil {
 						log.Fatalf("Fatal error loading rules: %s \n", err)
 					}
+					Rules = tmpRules
 					if verbose {
 						pretty.Println(Rules)
 					}
