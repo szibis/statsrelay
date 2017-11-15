@@ -499,12 +499,8 @@ func handleBuff(buff []byte) {
 	go sendPacket([]byte(stats+statsdropped), target, sendproto, TCPtimeout, boff)
 
 	if mirror != "" {
-		stats = fmt.Sprintf("%s:%d|c\n", statsMetric, mirrorNumMetrics)
-		if mirrorPackets[mirror].Len()+len(stats) > packetLen {
-			go sendPacket(mirrorPackets[mirror].Bytes(), mirror, sendproto, TCPtimeout, boff)
-			mirrorPackets[mirror].Reset()
-		}
-		mirrorPackets[mirror].Write([]byte(stats))
+		stats := fmt.Sprintf("%s:%d|c\n", statsMetric, mirrorNumMetrics)
+		go sendPacket([]byte(stats), mirror, sendproto, TCPtimeout, boff)
 	}
 
 	if numMetrics == 0 {
