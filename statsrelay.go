@@ -491,6 +491,22 @@ func handleBuff(buff []byte) {
 		}
 	}
 
+	// Handle reporting our own stats
+	stats := fmt.Sprintf("%s:%d|c\n", statsMetric, numMetrics-numMetricsDropped)
+	statsdropped := fmt.Sprintf("%s:%d|c\n", statsMetricDropped, numMetricsDropped)
+	target := hashRing.GetNode(statsMetric).Server
+	// make stats independent from main buffer to fix sliced metrics
+	go sendPacket([]byte(stats+statsdropped), target, sendproto, TCPtimeout, boff)
+
+	if mirror != "" {
+		stats = fmt.Sprintf("%s:%d|c\n", statsMetric, mirrorNumMetrics)
+		if mirrorPackets[mirror].Len()+len(stats) > packetLen {
+			go sendPacket(mirrorPackets[mirror].Bytes(), mirror, sendproto, TCPtimeout, boff)
+			mirrorPackets[mirror].Reset()
+		}
+		mirrorPackets[mirror].Write([]byte(stats))
+	}
+
 	if numMetrics == 0 {
 		// if we haven't handled any metrics, then don't update counters/stats
 		// or send packets
@@ -501,32 +517,6 @@ func handleBuff(buff []byte) {
 	totalMetricsLock.Lock()
 	totalMetrics = totalMetrics + numMetrics
 	totalMetricsLock.Unlock()
-
-	// Handle reporting our own stats
-	stats := fmt.Sprintf("%s:%d|c\n", statsMetric, numMetrics-numMetricsDropped)
-	statsdropped := fmt.Sprintf("%s:%d|c\n", statsMetricDropped, numMetricsDropped)
-	target := hashRing.GetNode(statsMetric).Server
-	targetdropped := hashRing.GetNode(statsMetricDropped).Server
-	if mirror != "" {
-		if mirrorPackets[mirror].Len()+len(stats) > packetLen {
-			go sendPacket(mirrorPackets[mirror].Bytes(), mirror, sendproto, TCPtimeout, boff)
-			mirrorPackets[mirror].Reset()
-		}
-	}
-	if packets[target].Len()+len(stats) > packetLen {
-		sendPacket(packets[target].Bytes(), target, sendproto, TCPtimeout, boff)
-		packets[target].Reset()
-	}
-	if packets[target].Len()+len(statsdropped) > packetLen {
-		sendPacket(packets[targetdropped].Bytes(), targetdropped, sendproto, TCPtimeout, boff)
-		packets[targetdropped].Reset()
-	}
-	packets[target].Write([]byte(stats))
-	packets[target].Write([]byte(statsdropped))
-	if mirror != "" {
-		stats = fmt.Sprintf("%s:%d|c\n", statsMetric, mirrorNumMetrics)
-		mirrorPackets[mirror].Write([]byte(stats))
-	}
 
 	// Empty out any remaining data
 	if mirror != "" {
@@ -540,13 +530,6 @@ func handleBuff(buff []byte) {
 			packets[target.Server].Reset()
 		}
 	}
-	for _, targetdropped := range hashRing.Nodes() {
-		if packets[targetdropped.Server].Len() > 0 {
-			sendPacket(packets[targetdropped.Server].Bytes(), targetdropped.Server, sendproto, TCPtimeout, boff)
-			packets[targetdropped.Server].Reset()
-		}
-	}
-
 	handleElapsed := time.Since(handleStart)
 
 	if verbose || debug && time.Now().Unix()-epochTime > 0 {
