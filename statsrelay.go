@@ -500,7 +500,7 @@ func handleBuff(buff []byte) {
 
 	if mirror != "" {
 		stats := fmt.Sprintf("%s:%d|c\n", statsMetric, mirrorNumMetrics)
-		go sendPacket([]byte(stats), mirror, sendproto, TCPtimeout, boff)
+		go sendPacket([]byte(stats), mirror, mirrorproto, TCPtimeout, boff)
 	}
 
 	if numMetrics == 0 {
