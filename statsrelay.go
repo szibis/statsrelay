@@ -873,7 +873,10 @@ func main() {
 
 	// HOST:PORT:INSTANCE validation
 	if mirror != "" {
-		_, _ = validateHost(mirror)
+		addr, _ := validateHost(mirror)
+		if addr != nil {
+			udpAddr[mirror] = addr
+		}
 		log.Printf("Setting up mirroring to %s", mirror)
 	}
 	for _, v := range flag.Args() {
