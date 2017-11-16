@@ -40,7 +40,7 @@ func Fnv1a64(data []byte) uint64 {
 // an int32.
 func Jump(key uint64, buckets int) int {
 	var b int64 = -1
-	var j int64 = 0
+	var j int64
 	for j < int64(buckets) {
 		b = j
 		key = key*2862933555777941757 + 1
@@ -117,7 +117,7 @@ func (chr *JumpHashRing) RemoveNode(node Node) {
 // GetNode returns a bucket for the given key using Google's Jump Hash
 // algorithm.
 func (chr *JumpHashRing) GetNode(key string) Node {
-	var key64 uint64 = Fnv1a64([]byte(key))
+	var key64 = Fnv1a64([]byte(key))
 	idx := Jump(key64, len(chr.ring))
 	//fmt.Printf("JUMP: %s => %x => %d\n", key, key64, idx)
 	return chr.ring[idx]

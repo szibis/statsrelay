@@ -1,0 +1,25 @@
+---
+rules:
+  - name: "test1"
+    match: ^(my_metric).(?P<_all_>.*)
+    replace: "testmetric1.${_all_}"
+    policy: "pass"
+    stopmatch: false
+    tags: []
+  - name: "test2"
+    match: ^.*\.(?P<env>.*)\.((?P<region>us-east-1))\.((?P<project>default))\.(?P<appname>helloworld)\.(?P<_all_>.*)
+    replace: "statsd.${region}.${env}.${project}.${appname}.${_all_}"
+    policy: "pass"
+    stopmatch: true
+    tags:
+      - "env:${env}"
+      - "region:${region}"
+      - "project:${project}"
+  - name: "test3"
+    match: (?P<_all_>.*)
+    replace: "globalprefix.${_all_}"
+    policy: "pass"
+    stopmatch: false
+    tags:
+      - "env:sandboax"
+      - "region:eu-west-1"
