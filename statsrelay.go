@@ -572,12 +572,8 @@ func readUDP(ip string, port int, c chan []byte) {
 		log.Printf("TCP Backoff set Min: %s Max: %s Factor: %f Retries: %d", TCPMinBackoff, TCPMaxBackoff, TCPFactorBackoff, TCPMaxRetries)
 	}
 
-	if len(metricsPrefix) != 0 {
-		log.Printf("Metrics prefix set to %s", metricsPrefix)
-	}
-
-	if len(metricTags) != 0 {
-		log.Printf("Metrics tags set to %s", metricTags)
+	if logonly {
+		log.Printf("Log Only for rules Eanbled\n")
 	}
 
 	if verbose || debug {
