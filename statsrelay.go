@@ -310,7 +310,7 @@ func genTags(metric []byte, metricTags []string, metricReplace string) string {
 
 // sendPacket takes a []byte and writes that directly to a UDP socket
 // that was assigned for target.
-func sendPacket(buff []byte, target string, sendproto string, TCPtimeout time.Duration, boff *backoff.Backoff) {
+func sendPacket(buff []byte, target string, sendproto string, TCPtimeout time.Duration, boff *backoff.Backoff, logonly bool) {
 	switch sendproto {
 	case "UDP":
 		if !logonly {
@@ -425,13 +425,13 @@ func handleBuff(buff []byte) {
 			if mirror != "" {
 				// check built packet size and send if metric doesn't fit
 				if mirrorPackets[mirror].Len()+size > packetLen {
-					go sendPacket(mirrorPackets[mirror].Bytes(), mirror, mirrorproto, TCPtimeout, boff)
+					go sendPacket(mirrorPackets[mirror].Bytes(), mirror, mirrorproto, TCPtimeout, boff, false)
 					mirrorPackets[mirror].Reset()
 				}
 			}
 			// check built packet size and send if metric doesn't fit
 			if packets[target].Len()+size > packetLen {
-				go sendPacket(packets[target].Bytes(), target, sendproto, TCPtimeout, boff)
+				go sendPacket(packets[target].Bytes(), target, sendproto, TCPtimeout, boff, logonly)
 				packets[target].Reset()
 			}
 			// add to packet
@@ -496,11 +496,11 @@ func handleBuff(buff []byte) {
 	statsdropped := fmt.Sprintf("%s:%d|c\n", statsMetricDropped, numMetricsDropped)
 	target := hashRing.GetNode(statsMetric).Server
 	// make stats independent from main buffer to fix sliced metrics
-	go sendPacket([]byte(stats+statsdropped), target, sendproto, TCPtimeout, boff)
+	go sendPacket([]byte(stats+statsdropped), target, sendproto, TCPtimeout, boff, logonly)
 
 	if mirror != "" {
 		stats := fmt.Sprintf("%s:%d|c\n", statsMetric, mirrorNumMetrics)
-		go sendPacket([]byte(stats), mirror, mirrorproto, TCPtimeout, boff)
+		go sendPacket([]byte(stats), mirror, mirrorproto, TCPtimeout, boff, false)
 	}
 
 	if numMetrics == 0 {
@@ -517,12 +517,12 @@ func handleBuff(buff []byte) {
 	// Empty out any remaining data
 	if mirror != "" {
 		if mirrorPackets[mirror].Len() > 0 {
-			sendPacket(mirrorPackets[mirror].Bytes(), mirror, mirrorproto, TCPtimeout, boff)
+			sendPacket(mirrorPackets[mirror].Bytes(), mirror, mirrorproto, TCPtimeout, boff, false)
 		}
 	}
 	for _, target := range hashRing.Nodes() {
 		if packets[target.Server].Len() > 0 {
-			sendPacket(packets[target.Server].Bytes(), target.Server, sendproto, TCPtimeout, boff)
+			sendPacket(packets[target.Server].Bytes(), target.Server, sendproto, TCPtimeout, boff, logonly)
 			packets[target.Server].Reset()
 		}
 	}
