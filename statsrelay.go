@@ -209,16 +209,21 @@ func replaceLogic(metric string, rMatch string, rReplace string, policy string, 
 		replaced = re.ReplaceAllString(metric, rReplace)
 	}
 	elapsed := time.Since(start)
+	// TODO: review below conditions and try to simplify them
 	if policy == "drop" {
 		// drop and stop processing
 		if rStopMatch && match != nil {
 			return rMatch, matched, rReplace, "", policy, elapsed, true
 		}
-		// go to next rule
-		return rMatch, matched, rReplace, "", policy, elapsed, false
+		// return replaced metric and and go to next rule
+		if match != nil {
+			return rMatch, matched, rReplace, replaced, policy, elapsed, false
+		}
+		// return unchanged metric if no match and go tu next rule
+		return rMatch, matched, rReplace, metric, policy, elapsed, false
 	}
 	// if policy == pass
-	// send unchanged metrics if no match
+	// send unchanged metric if no match and go to next rule
 	if match == nil {
 		return rMatch, matched, rReplace, metric, policy, elapsed, false
 	}
@@ -235,6 +240,7 @@ func metricMatchReplace(metric []byte, rules *rulesDef, policyDefault string) ([
 	var matchRule string
 	var replaceRule string
 	var policy string
+	var lastMatchedPolicy string
 	var replaced string
 	var matched int
 	var stopMatch bool
@@ -251,18 +257,20 @@ func metricMatchReplace(metric []byte, rules *rulesDef, policyDefault string) ([
 			matchRule, matched, replaceRule, replaced, policy, elapsed, stopMatch = replaceLogic(string(metric), r.Match, r.Replace, policy, r.Tags, r.StopMatch)
 			if matched != 0 {
 				ruleNames = append(ruleNames, r.Name)
+				lastMatchedPolicy = policy
 			}
 			// if metric was replaced before use it against next rules
 		} else {
 			matchRule, matched, replaceRule, replaced, policy, elapsed, stopMatch = replaceLogic(replaced, r.Match, r.Replace, policy, r.Tags, r.StopMatch)
 			if matched != 0 {
 				ruleNames = append(ruleNames, r.Name)
+				lastMatchedPolicy = policy
 			}
 		}
 		sumElapsed = sumElapsed + elapsed
 		if debug {
 			// per match log info
-			replacePrint(policy, matchRule, replaceRule, replaced, len(ruleNames), elapsed)
+			replacePrint(lastMatchedPolicy, matchRule, replaceRule, replaced, len(ruleNames), elapsed)
 		}
 		// don't process next rules
 		if stopMatch {
@@ -270,14 +278,14 @@ func metricMatchReplace(metric []byte, rules *rulesDef, policyDefault string) ([
 		}
 	}
 	// use default policy for unmatched metrics
-	if matched == 0 {
+	if len(ruleNames) == 0 {
 		policy = defaultPolicy
 	}
 	if verbose || debug {
 		// summary log info per metric with all matches and replaces
-		replaceSumPrint(policy, ruleNames, replaced, len(ruleNames), sumElapsed)
+		replaceSumPrint(lastMatchedPolicy, ruleNames, replaced, len(ruleNames), sumElapsed)
 	}
-	return []byte(replaced), len(ruleNames), policy
+	return []byte(replaced), len(ruleNames), lastMatchedPolicy
 }
 
 // getMetricName() parses the given []byte metric as a string, extracts
