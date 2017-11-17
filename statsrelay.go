@@ -701,12 +701,14 @@ func validateRules(rulesFile string, rulesDir string, exitOnErrors bool) map[str
 
 	err := rules.ReadInConfig()
 	if err != nil {
-		log.Fatalf("Fatal error wile reading rules config: %s\n", err)
+		rulesErrors["config_parsing"] = []string{err.Error()}
+		log.Printf("Fatal error wile reading rules config: %s\n", err)
 	}
 
 	err = rules.Unmarshal(&rulesValidator)
 	if err != nil {
-		log.Fatalf("Fatal error while loading rules: %s\n", err)
+		rulesErrors["config_unmarshall"] = []string{err.Error()}
+		log.Printf("Fatal error while loading rules: %s\n", err)
 	}
 
 	for _, r := range rulesValidator.Rules {
@@ -816,7 +818,9 @@ func main() {
 		rulesDir := filepath.Dir(rulesConfig)
 
 		// validate and exit in case of errors
-		validateRules(rulesFile, rulesDir, true)
+		if len(validateRules(rulesFile, rulesDir, true)) != 0 {
+			os.Exit(1)
+		}
 		if rulesValidationTest {
 			log.Printf("All rules in %s are correct.\n", rulesConfig)
 			os.Exit(0)
