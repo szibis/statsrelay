@@ -279,7 +279,7 @@ func metricMatchReplace(metric []byte, rules *rulesDef, policyDefault string) ([
 	}
 	// use default policy for unmatched metrics
 	if len(ruleNames) == 0 {
-		policy = defaultPolicy
+		lastMatchedPolicy = defaultPolicy
 	}
 	if verbose || debug {
 		// summary log info per metric with all matches and replaces
