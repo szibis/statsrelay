@@ -29,7 +29,7 @@ import (
 )
 
 // VERSION shows statsrelay version
-const VERSION string = "0.0.7"
+const VERSION string = "0.1.0"
 
 // BUFFERSIZE controls the size of the [...]byte array used to read UDP data
 // off the wire and into local memory.  Metrics are separated by \n
@@ -106,6 +106,9 @@ var profiling bool
 
 // profilingBind string value for pprof http host:port data
 var profilingBind string
+
+// version bool value for print version only
+var version bool
 
 // maxprocs int value to set GOMAXPROCS
 var maxprocs int
@@ -795,6 +798,8 @@ func main() {
 	flag.StringVar(&defaultPolicy, "default-policy", "drop", "Default rules policy. Options: drop|pass")
 	flag.StringVar(&defaultPolicy, "d", "drop", "Default rules policy. Options: drop|pass")
 
+	flag.BoolVar(&version, "version", false, "Statsrelay version")
+
 	defaultBufferSize, err := getSockBufferMaxSize()
 	if err != nil {
 		defaultBufferSize = 32 * 1024
@@ -803,6 +808,11 @@ func main() {
 	flag.IntVar(&bufferMaxSize, "bufsize", defaultBufferSize, "Read buffer size")
 
 	flag.Parse()
+
+	if version {
+		fmt.Printf("%s", VERSION)
+		os.Exit(0)
+	}
 
 	// viper config rules loading
 	if rulesConfig != "" {
