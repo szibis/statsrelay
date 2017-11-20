@@ -810,7 +810,7 @@ func main() {
 	flag.Parse()
 
 	if version {
-		fmt.Printf("%s", VERSION)
+		fmt.Printf("%s\n", VERSION)
 		os.Exit(0)
 	}
 
