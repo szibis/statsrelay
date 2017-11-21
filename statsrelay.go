@@ -68,7 +68,7 @@ var epochTime int64
 var verbose bool
 
 // Debug output
-var debug bool
+var debuglog bool
 
 // Log-only mode
 var logonly bool
@@ -141,7 +141,7 @@ type rulesDef struct {
 	} `mapstructure:"rules"`
 }
 
-// Rules to rules Def
+// Rules to rulesDef struct
 var Rules rulesDef
 
 // use a single instance of Validate, it caches struct info
@@ -167,102 +167,127 @@ func getSockBufferMaxSize() (int, error) {
 	return i, nil
 }
 
-// replacePrint() prints info about matching and replacing metrics and used policy
-func replacePrint(policy string, match string, replace string, replaced string, matched int, elapsed time.Duration) {
-	log.Printf("[%s] MatchRule: %s Rule: %s, Final: %s, Match: %d in [%s]", strings.ToUpper(policy), match, replace, replaced, matched, elapsed)
-	return
-}
-
-// replaceSumPrint() prints summary info about matching and replacing metrics and used policy
-func replaceSumPrint(policy string, ruleNames []string, replaced string, matches int, elapsed time.Duration) {
-	log.Printf("[%s] Rule Names: %s Final: %s, Matches: %d in [%s]", strings.ToUpper(policy), ruleNames, replaced, matches, elapsed)
-	return
-}
-
-// replaceLogic() returns match rule, # of matched rules, replace rule,
-// (un)replaced metric, policy and if matching against next rules should be stopped
-func replaceLogic(metric string, rMatch string, rReplace string, policy string, rTags []string, rStopMatch bool) (string, int, string, string, string, time.Duration, bool) {
-	var match []string
-	var tagMetric string
-	var matched int
-	var replaced string
-	start := time.Now()
-	re := regexp.MustCompile(rMatch)
-	match = re.FindAllString(metric, -1)
-	if match != nil {
-		matched++
-	}
-	if rTags != nil {
-		tagMetric = genTags([]byte(metric), rTags, rReplace)
-	}
-	if tagMetric != "" {
-		replaced = re.ReplaceAllString(metric, tagMetric)
-	} else {
-		replaced = re.ReplaceAllString(metric, rReplace)
-	}
-	elapsed := time.Since(start)
-	// TODO: review below conditions and try to simplify them
-	if policy == "drop" {
-		// drop and stop processing
-		if rStopMatch && match != nil {
-			return rMatch, matched, rReplace, "", policy, elapsed, true
-		}
-		// return replaced metric and and go to next rule
-		if match != nil {
-			return rMatch, matched, rReplace, replaced, policy, elapsed, false
-		}
-		// return unchanged metric if no match and go tu next rule
-		return rMatch, matched, rReplace, metric, policy, elapsed, false
-	}
-	// if policy == pass
-	// send unchanged metric if no match and go to next rule
-	if match == nil {
-		return rMatch, matched, rReplace, metric, policy, elapsed, false
-	}
-	// stop processing next rules
-	if rStopMatch {
-		return rMatch, matched, rReplace, replaced, policy, elapsed, true
-	}
-	// replace and go to next rule
-	return rMatch, matched, rReplace, replaced, policy, elapsed, false
-}
-
 // metricMatchReplace() matches metric based on regexp definition rules
-func metricMatchReplace(metric []byte, rules *rulesDef, policyDefault string) ([]byte, int, string) {
+func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) ([]byte, int, string) {
 	var matchRule string
 	var replaceRule string
 	var policy string
 	var lastMatchedPolicy string
 	var replaced string
 	var matched int
-	var stopMatch bool
+	var stopMatch bool = false
+	var tagMetric string
 	var sumElapsed time.Duration
 	ruleNames := make([]string, 0)
 	var elapsed time.Duration
-	for _, r := range rules.Rules {
-		if r.Policy != "" {
-			policy = r.Policy
+	sumStart := time.Now()
+	rrules := rules.Rules
+	for i := range rrules {
+		re := regexp.MustCompile(rrules[i].Match)
+		if rrules[i].Policy != "" {
+			policy = rrules[i].Policy
 		} else {
 			policy = policyDefault
 		}
 		if replaced == "" {
-			matchRule, matched, replaceRule, replaced, policy, elapsed, stopMatch = replaceLogic(string(metric), r.Match, r.Replace, policy, r.Tags, r.StopMatch)
-			if matched != 0 {
-				ruleNames = append(ruleNames, r.Name)
-				lastMatchedPolicy = policy
+			start := time.Now()
+			//matchRule, matched, replaceRule, replaced, policy, elapsed, stopMatch = replaceLogic(string(metric), rTags, rReplace, rMatch, rStopMatch, ppolicy)
+			match := re.FindAllString(metric, -1)
+			// send unchanged metric if no match and go to next rule
+			if match == nil {
+				stopMatch = false
+				continue
 			}
+			if match != nil {
+				matched++
+				if rrules[i].Tags != nil {
+					tagMetric = genTags(metric, rrules[i].Tags, rrules[i].Replace)
+				}
+				if tagMetric != "" {
+					replacedre.ReplaceAllString(metric, tagMetric)
+				} else {
+					replaced = re.ReplaceAllString(metric, rrules[i].Replace)
+				}
+			}
+			elapsed = time.Since(start)
+			// TODO: review below conditions and try to simplify them
+			if policy == "drop" {
+				// drop and stop processing
+				if rrules[i].StopMatch && match != nil {
+					replaced = ""
+					stopMatch = true
+					break
+				}
+				// return replaced metric and and go to next rule
+				if match != nil {
+					stopMatch = false
+					continue
+				}
+				// return unchanged metric if no match and go tu next rule
+				stopMatch = false
+				continue
+			}
+			// stop processing next rules
+			if rrules[i].StopMatch {
+				stopMatch = true
+				break
+			}
+			// replace and go to next rule
+			ruleNames = append(ruleNames, rrules[i].Name)
+			lastMatchedPolicy = policy
 			// if metric was replaced before use it against next rules
 		} else {
-			matchRule, matched, replaceRule, replaced, policy, elapsed, stopMatch = replaceLogic(replaced, r.Match, r.Replace, policy, r.Tags, r.StopMatch)
-			if matched != 0 {
-				ruleNames = append(ruleNames, r.Name)
-				lastMatchedPolicy = policy
+			start := time.Now()
+			//matchRule, matched, replaceRule, replaced, policy, elapsed, stopMatch = replaceLogic(replaced, rTags, rReplace, rMatch, rStopMatch, ppolicy)
+			match := re.FindAllString(replaced, -1)
+			// send unchanged metric if no match and go to next rule
+			if match == nil {
+				stopMatch = false
+				continue
 			}
+			if match != nil {
+				matched++
+				if rrules[i].Tags != nil {
+					tagMetric = genTags(replaced, rrules[i].Tags, rrules[i].Replace)
+				}
+				if tagMetric != "" {
+					replaced = re.ReplaceAllString(replaced, tagMetric)
+				} else {
+					replaced = re.ReplaceAllString(replaced, rrules[i].Replace)
+				}
+			}
+			// TODO: review below conditions and try to simplify them
+			if policy == "drop" {
+				// drop and stop processing
+				if rrules[i].StopMatch && match != nil {
+					replaced = ""
+					stopMatch = true
+					break
+				}
+				// return replaced metric and and go to next rule
+				if match != nil {
+					stopMatch = false
+					continue
+				}
+				// return unchanged metric if no match and go tu next rule
+				stopMatch = false
+				continue
+			}
+			// stop processing next rules
+			if rrules[i].StopMatch {
+				stopMatch = true
+				break
+			}
+			// replace and go to next rule
+			ruleNames = append(ruleNames, rrules[i].Name)
+			lastMatchedPolicy = policy
+			elapsed = time.Since(start)
 		}
-		sumElapsed = sumElapsed + elapsed
-		if debug {
+		sumElapsed = time.Since(sumStart)
+		if debuglog {
 			// per match log info
-			replacePrint(lastMatchedPolicy, matchRule, replaceRule, replaced, len(ruleNames), elapsed)
+			// replacePrint(lastMatchedPolicy, matchRule, replaceRule, replaced, len(ruleNames), elapsed)
+			log.Printf("[%s] MatchRule: %s Rule: %s, Final: %s, Match: %d in [%s]", strings.ToUpper(policy), matchRule, replaceRule, replaced, len(ruleNames), elapsed)
 		}
 		// don't process next rules
 		if stopMatch {
@@ -273,9 +298,10 @@ func metricMatchReplace(metric []byte, rules *rulesDef, policyDefault string) ([
 	if len(ruleNames) == 0 {
 		lastMatchedPolicy = defaultPolicy
 	}
-	if verbose || debug {
+	if verbose || debuglog {
 		// summary log info per metric with all matches and replaces
-		replaceSumPrint(lastMatchedPolicy, ruleNames, replaced, len(ruleNames), sumElapsed)
+		//replaceSumPrint(lastMatchedPolicy, ruleNames, replaced, len(ruleNames), sumElapsed)
+		log.Printf("[%s] Rule Names: %s Final: %s, Matches: %d in [%s]", strings.ToUpper(policy), ruleNames, replaced, len(ruleNames), sumElapsed)
 	}
 	return []byte(replaced), len(ruleNames), lastMatchedPolicy
 }
@@ -294,12 +320,12 @@ func getMetricName(metric []byte) (string, error) {
 
 // genTags() add metric []byte and metricTags string, return string
 // of metrics with additional tags
-func genTags(metric []byte, metricTags []string, metricReplace string) string {
+func genTags(metric string, metricTags []string, metricReplace string) string {
 	// statsd metrics are of the form:
 	// KEY:VALUE|TYPE|RATE or KEY:VALUE|TYPE|RATE|#tags
 	// This function add or extend #tags in metric
 	tagsTmp := strings.Join(metricTags, ",")
-	if strings.Contains((string(metric)), "|#") {
+	if strings.Contains(metric, "|#") {
 		return fmt.Sprintf("%s,%s", metricReplace, tagsTmp)
 	}
 	if tagsTmp != "" {
@@ -339,7 +365,7 @@ func sendPacket(buff []byte, target string, sendproto string, TCPtimeout time.Du
 			}
 		}
 	case "TEST":
-		if verbose || debug {
+		if verbose || debuglog {
 			log.Printf("Debug: Would have sent packet of %d bytes to %s",
 				len(buff), target)
 		}
@@ -436,10 +462,11 @@ func handleBuff(buff []byte) {
 			}
 			// add to packet
 			if len(Rules.Rules) != 0 {
-				buffNew, matched, policy := metricMatchReplace(buff[offset:offset+size], &Rules, policy)
+
+				buffNew, matched, policy := metricMatchReplace(string(buff[offset:offset+size]), &Rules, policy)
 				// send replaced metric
 				if matched > 0 {
-					if verbose || debug {
+					if verbose || debuglog {
 						if policy == "pass" {
 							log.Printf("Sending %s to %s", buffNew, target)
 						} else if policy == "drop" {
@@ -448,7 +475,7 @@ func handleBuff(buff []byte) {
 					}
 				} else {
 					// don't replace metric if there's no rule match
-					if verbose || debug {
+					if verbose || debuglog {
 						if policy == "pass" {
 							log.Printf("Sending %s to %s", metric, target)
 						} else if policy == "drop" {
@@ -465,12 +492,12 @@ func handleBuff(buff []byte) {
 				// send unchanged metric
 			} else {
 				if policy == "drop" {
-					if verbose || debug {
+					if verbose || debuglog {
 						log.Printf("Drop %s to %s", metric, target)
 					}
 					numMetricsDropped++
 				} else if policy == "pass" {
-					if verbose || debug {
+					if verbose || debuglog {
 						log.Printf("Sending %s to %s", metric, target)
 					}
 					packets[target].Write(buff[offset : offset+size])
@@ -479,10 +506,12 @@ func handleBuff(buff []byte) {
 			}
 
 			if mirror != "" {
+				if verbose || debuglog {
+					log.Printf("[Mirror] Sending %s to %s", buff[offset:offset+size], mirror)
+				}
 				mirrorPackets[mirror].Write(buff[offset : offset+size])
 				mirrorPackets[mirror].Write(sep)
 				mirrorNumMetrics++
-				log.Printf("[Mirror] Sending %s to %s", buff[offset:offset+size], mirror)
 			}
 			numMetrics++
 			offset = offset + size + 1
@@ -526,7 +555,7 @@ func handleBuff(buff []byte) {
 	}
 	handleElapsed := time.Since(handleStart)
 
-	if verbose || debug && time.Now().Unix()-epochTime > 0 {
+	if verbose || debuglog && time.Now().Unix()-epochTime > 0 {
 		log.Printf("Processed %d metrics in %s. Dropped %d metrics. Running total: %d. Metrics/sec: %d\n",
 			numMetrics-numMetricsDropped, handleElapsed, numMetricsDropped, totalMetrics,
 			int64(totalMetrics)/(time.Now().Unix()-epochTime))
@@ -574,7 +603,7 @@ func readUDP(ip string, port int, c chan []byte) {
 		log.Printf("Log Only for rules Eanbled\n")
 	}
 
-	if verbose || debug {
+	if verbose || debuglog {
 		log.Printf("Rock and Roll!\n")
 	}
 
@@ -753,7 +782,7 @@ func main() {
 	flag.BoolVar(&verbose, "verbose", false, "Verbose output")
 	flag.BoolVar(&verbose, "v", false, "Verbose output")
 
-	flag.BoolVar(&debug, "debug", false, "Debug output")
+	flag.BoolVar(&debuglog, "debug", false, "Debug output")
 
 	flag.BoolVar(&logonly, "log-only", false, "Log-only mode: doesn't send metrics, just logs the output")
 	flag.BoolVar(&logonly, "l", false, "Log-only mode: doesn't send metrics, just logs the output")
@@ -765,7 +794,7 @@ func main() {
 	flag.DurationVar(&TCPtimeout, "t", 1*time.Second, "Timeout for TCP client remote connections")
 
 	flag.BoolVar(&profiling, "pprof", false, "Enable HTTP endpoint for pprof")
-	flag.StringVar(&profilingBind, "pprof-bind", ":8080", "Bind for pprof HTTP endpoint")
+	flag.StringVar(&profilingBind, "pprof-bind", ":6060", "Bind for pprof HTTP endpoint")
 
 	flag.IntVar(&TCPMaxRetries, "backoff-retries", 3, "Maximum number of retries in backoff for TCP dial when sendproto set to TCP")
 	flag.DurationVar(&TCPMinBackoff, "backoff-min", 50*time.Millisecond, "Backoff minimal (integer) time in Millisecond")
@@ -868,9 +897,17 @@ func main() {
 	}
 
 	if profiling {
+		// profiling web server
 		go func() {
 			log.Println(http.ListenAndServe(profilingBind, nil))
 		}()
+
+		// /debug/vars endpoint on profiling web server
+		expvar.Publish("stats", influxdb.Metrics("statsrelay_internals"))
+
+		if err != nil {
+			log.Fatalf("Unable to set /debug/vars metrics internals endpoint on %s with error: %q", profilingBind, err)
+		}
 	}
 
 	// HOST:PORT:INSTANCE validation
@@ -888,17 +925,6 @@ func main() {
 			hashRing.AddNode(Node{v, ""})
 		}
 	}
-
-	// metric endpoint
-	if profiling {
-		expvar.Publish("stats", influxdb.Metrics("statsrelay_internals"))
-
-		if err != nil {
-			log.Fatalf("Unable to set metrics endpoint %q", err)
-		}
-
-	}
-	// end of metric endpoint
 
 	epochTime = time.Now().Unix()
 	runServer(bindAddress, port)
