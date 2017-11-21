@@ -41,19 +41,6 @@ const BUFFERSIZE int = 1 * 1024 * 1024 // 1MiB
 // Such as <prefix>.statsProcessed.  Default is "statsrelay"
 var prefix string
 
-// metricsPrefix is the string that will be prefixed onto each metric passed
-// through statsrelay. This is especialy usefull with docker passing
-// env, appname automatic from docker environment to app metri
-// Such as <metricsPrefix>.mytest.service.metric.count  Default is empty
-var metricsPrefix string
-
-// metricTags is the string that will be used as tags into each metric passed
-// through statsrelay.
-// This is especialy usefull with datadog statsd metrics passing.
-// Such as my.prefix.myinc:1|c|@1.000000|#baz,foo:bar
-// Default is empty
-var metricTags string
-
 // udpAddr is a mapping of HOST:PORT:INSTANCE to a UDPAddr object
 var udpAddr = make(map[string]*net.UDPAddr)
 
@@ -461,9 +448,9 @@ func handleBuff(buff []byte) {
 					// don't replace metric if there's no rule match
 					if verbose || debug {
 						if policy == "pass" {
-							log.Printf("Sending %s to %s", string(metric), target)
+							log.Printf("Sending %s to %s", metric, target)
 						} else if policy == "drop" {
-							log.Printf("Dropping %s", string(metric))
+							log.Printf("Dropping %s", metric)
 						}
 					}
 				}
@@ -758,9 +745,6 @@ func main() {
 	flag.StringVar(&mirrorproto, "mirrorproto", "UDP", "IP Protocol for forwarding original data to local statsd: TCP, UDP, or TEST")
 
 	flag.StringVar(&prefix, "prefix", "statsrelay", "The prefix to use with self generated stats")
-	flag.StringVar(&metricsPrefix, "metrics-prefix", "", "The prefix to use with metrics passed through statsrelay")
-
-	flag.StringVar(&metricTags, "metrics-tags", "", "Comma separated tags for each relayed metric. Example: foo:bar,test,test2:bar")
 
 	flag.IntVar(&maxprocs, "maxprocs", 0, "Set GOMAXPROCS in runtime. If not defined then Golang defaults.")
 
