@@ -451,7 +451,6 @@ func handleBuff(buff []byte) {
 				// send replaced metric
 				if matched > 0 {
 					if verbose || debug {
-						//log.Printf("Matched %s and policy is %s", metric, strings.ToUpper(policy))
 						if policy == "pass" {
 							log.Printf("Sending %s to %s", buffNew, target)
 						} else if policy == "drop" {
@@ -461,7 +460,6 @@ func handleBuff(buff []byte) {
 				} else {
 					// don't replace metric if there's no rule match
 					if verbose || debug {
-						log.Printf("No match for %s and policy is %s", metric, strings.ToUpper(policy))
 						if policy == "pass" {
 							log.Printf("Sending %s to %s", string(metric), target)
 						} else if policy == "drop" {
