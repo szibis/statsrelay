@@ -868,9 +868,17 @@ func main() {
 	}
 
 	if profiling {
+		// profiling web server
 		go func() {
 			log.Println(http.ListenAndServe(profilingBind, nil))
 		}()
+
+		// /debug/vars endpoint on profiling web server
+		expvar.Publish("stats", influxdb.Metrics("statsrelay_internals"))
+
+		if err != nil {
+			log.Fatalf("Unable to set /debug/vars metrics internals endpoint on %s with error: %q", profilingBind, err)
+		}
 	}
 
 	// HOST:PORT:INSTANCE validation
@@ -888,17 +896,6 @@ func main() {
 			hashRing.AddNode(Node{v, ""})
 		}
 	}
-
-	// metric endpoint
-	if profiling {
-		expvar.Publish("stats", influxdb.Metrics("statsrelay_internals"))
-
-		if err != nil {
-			log.Fatalf("Unable to set metrics endpoint %q", err)
-		}
-
-	}
-	// end of metric endpoint
 
 	epochTime = time.Now().Unix()
 	runServer(bindAddress, port)
