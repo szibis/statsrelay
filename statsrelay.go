@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"expvar"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -25,6 +26,7 @@ import (
 	"github.com/jpillora/backoff"
 	"github.com/kr/pretty"
 	"github.com/spf13/viper"
+	"github.com/tevjef/go-runtime-metrics/influxdb"
 	"gopkg.in/go-playground/validator.v9"
 )
 
@@ -886,6 +888,17 @@ func main() {
 			hashRing.AddNode(Node{v, ""})
 		}
 	}
+
+	// metric endpoint
+	if profiling {
+		expvar.Publish("stats", influxdb.Metrics("statsrelay_internals"))
+
+		if err != nil {
+			log.Fatalf("Unable to set metrics endpoint %q", err)
+		}
+
+	}
+	// end of metric endpoint
 
 	epochTime = time.Now().Unix()
 	runServer(bindAddress, port)
