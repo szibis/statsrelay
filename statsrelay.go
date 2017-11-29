@@ -12,14 +12,12 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -138,6 +136,8 @@ type rulesDef struct {
 		Policy    string   `mapstructure:"policy" validate:"eq=pass|eq=drop"`
 		StopMatch bool     `mapstructure:"stop_match" validate:"-"`
 		Tags      []string `mapstructure:"tags" validate:"unique"`
+
+		reMatch *regexp.Regexp
 	} `mapstructure:"rules"`
 }
 
@@ -169,21 +169,29 @@ func getSockBufferMaxSize() (int, error) {
 
 // metricMatchReplace() matches metric based on regexp definition rules
 func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) ([]byte, int, string) {
-	var matchRule string
-	var replaceRule string
-	var policy string
-	var lastMatchedPolicy string
-	var replaced string
-	var matched int
-	var stopMatch bool = false
-	var tagMetric string
-	var sumElapsed time.Duration
+	var (
+		matchRule         string
+		replaceRule       string
+		policy            string
+		lastMatchedPolicy string
+		replaced          string
+		matched           int
+		stopMatch         bool = false
+		tagMetric         string
+		sumElapsed        time.Duration
+		elapsed           time.Duration
+	)
+
 	ruleNames := make([]string, 0)
-	var elapsed time.Duration
 	sumStart := time.Now()
 	rrules := rules.Rules
 	for i := range rrules {
-		re := regexp.MustCompile(rrules[i].Match)
+		if rrules[i].reMatch == nil {
+			rrules[i].reMatch = regexp.MustCompile(rrules[i].Match)
+		}
+
+		re := rrules[i].reMatch
+
 		if rrules[i].Policy != "" {
 			policy = rrules[i].Policy
 		} else {
@@ -204,7 +212,7 @@ func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) ([
 					tagMetric = genTags(metric, rrules[i].Tags, rrules[i].Replace)
 				}
 				if tagMetric != "" {
-					replacedre.ReplaceAllString(metric, tagMetric)
+					replaced = re.ReplaceAllString(metric, tagMetric)
 				} else {
 					replaced = re.ReplaceAllString(metric, rrules[i].Replace)
 				}
@@ -506,12 +514,12 @@ func handleBuff(buff []byte) {
 			}
 
 			if mirror != "" {
-				if verbose || debuglog {
-					log.Printf("[Mirror] Sending %s to %s", buff[offset:offset+size], mirror)
-				}
 				mirrorPackets[mirror].Write(buff[offset : offset+size])
 				mirrorPackets[mirror].Write(sep)
 				mirrorNumMetrics++
+				if verbose || debuglog {
+					log.Printf("[Mirror] Sending %s to %s", buff[offset:offset+size], mirror)
+				}
 			}
 			numMetrics++
 			offset = offset + size + 1
@@ -527,7 +535,7 @@ func handleBuff(buff []byte) {
 
 	if mirror != "" {
 		stats := fmt.Sprintf("%s:%d|c\n", statsMetric, mirrorNumMetrics)
-		go sendPacket([]byte(stats), mirror, mirrorproto, TCPtimeout, boff, false)
+		go sendPacket([]byte(stats), target, sendproto, TCPtimeout, boff, logonly)
 	}
 
 	if numMetrics == 0 {
@@ -564,8 +572,7 @@ func handleBuff(buff []byte) {
 
 // readUDP() a goroutine that just reads data off of a UDP socket and fills
 // buffers.  Once a buffer is full, it passes it to handleBuff().
-func readUDP(ip string, port int, c chan []byte) {
-	var buff *[BUFFERSIZE]byte
+func readUDP(ip string, port int, handler func([]byte)) {
 	var offset int
 	var timeout bool
 	var addr = net.UDPAddr{
@@ -607,13 +614,8 @@ func readUDP(ip string, port int, c chan []byte) {
 		log.Printf("Rock and Roll!\n")
 	}
 
+	buff := make([]byte, BUFFERSIZE)
 	for {
-		if buff == nil {
-			buff = new([BUFFERSIZE]byte)
-			offset = 0
-			timeout = false
-		}
-
 		i, err := sock.Read(buff[offset : BUFFERSIZE-1])
 		if err == nil {
 			buff[offset+i] = '\n'
@@ -632,8 +634,9 @@ func readUDP(ip string, port int, c chan []byte) {
 		if offset > BUFFERSIZE-4096 || timeout {
 			// Approaching make buff size
 			// we use a 4KiB margin
-			c <- buff[:offset]
-			buff = nil
+			handler(buff[:offset])
+			offset = 0
+			timeout = false
 		}
 	}
 }
@@ -641,27 +644,27 @@ func readUDP(ip string, port int, c chan []byte) {
 // runServer() runs and manages this daemon, deals with OS signals, and handles
 // communication channels.
 func runServer(host string, port int) {
-	var c = make(chan []byte, 256)
+	// var c = make(chan []byte, BUFFERSIZE)
 	// Set up channel on which to send signal notifications.
 	// We must use a buffered channel or risk missing the signal
 	// if we're not ready to receive when the signal is sent.
-	var sig = make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt, os.Kill, syscall.SIGTERM)
+	// var sig = make(chan os.Signal, 1)
+	// signal.Notify(sig, os.Interrupt, os.Kill, syscall.SIGTERM)
 
 	// read incoming UDP packets
-	go readUDP(host, port, c)
+	readUDP(host, port, handleBuff)
 
-	for {
-		select {
-		case buff := <-c:
-			//fmt.Printf("Handling %d length buffer...\n", len(buff))
-			go handleBuff(buff)
-		case <-sig:
-			log.Printf("Signal received.  Shutting down...\n")
-			log.Printf("Received %d metrics.\n", totalMetrics)
-			return
-		}
-	}
+	// for {
+	// 	select {
+	// 	case buff := <-c:
+	// 		//fmt.Printf("Handling %d length buffer...\n", len(buff))
+	// 		handleBuff(buff)
+	// 	case <-sig:
+	// 		log.Printf("Signal received.  Shutting down...\n")
+	// 		log.Printf("Received %d metrics.\n", totalMetrics)
+	// 		return
+	// 	}
+	// }
 }
 
 // validateHost() checks if given HOST:PORT:INSTANCE address is in proper format
