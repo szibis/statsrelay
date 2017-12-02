@@ -17,7 +17,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -25,7 +25,7 @@ import (
 	"github.com/kr/pretty"
 	"github.com/spf13/viper"
 	"github.com/tevjef/go-runtime-metrics/influxdb"
-	"gopkg.in/go-playground/validator.v9"
+	validator "gopkg.in/go-playground/validator.v9"
 )
 
 // VERSION shows statsrelay version
@@ -54,10 +54,7 @@ var mirror string
 var hashRing = NewJumpHashRing(1)
 
 // totalMetrics tracks the totall number of metrics processed
-var totalMetrics int
-
-// totalMetricsLock is a mutex gaurding totalMetrics
-var totalMetricsLock sync.Mutex
+var totalMetrics uint32
 
 // Time we began
 var epochTime int64
@@ -373,7 +370,7 @@ func sendPacket(buff []byte, target string, sendproto string, TCPtimeout time.Du
 				}
 				conn.Write(buff)
 				boff.Reset()
-				defer conn.Close()
+				conn.Close()
 				break
 			}
 		}
@@ -413,9 +410,9 @@ func handleBuff(buff []byte) {
 		mirrorPackets[mirror] = new(bytes.Buffer)
 	}
 	sep := []byte("\n")
-	numMetrics := 0
-	numMetricsDropped := 0
-	mirrorNumMetrics := 0
+	numMetrics := uint32(0)
+	numMetricsDropped := uint32(0)
+	mirrorNumMetrics := uint32(0)
 	statsMetric := prefix + ".statsProcessed"
 	statsMetricDropped := prefix + ".statsDropped"
 	policy := defaultPolicy
@@ -464,13 +461,13 @@ func handleBuff(buff []byte) {
 			if mirror != "" {
 				// check built packet size and send if metric doesn't fit
 				if mirrorPackets[mirror].Len()+size > packetLen {
-					go sendPacket(mirrorPackets[mirror].Bytes(), mirror, mirrorproto, TCPtimeout, boff, false)
+					sendPacket(mirrorPackets[mirror].Bytes(), mirror, mirrorproto, TCPtimeout, boff, false)
 					mirrorPackets[mirror].Reset()
 				}
 			}
 			// check built packet size and send if metric doesn't fit
 			if packets[target].Len()+size > packetLen {
-				go sendPacket(packets[target].Bytes(), target, sendproto, TCPtimeout, boff, logonly)
+				sendPacket(packets[target].Bytes(), target, sendproto, TCPtimeout, boff, logonly)
 				packets[target].Reset()
 			}
 			// add to packet
@@ -519,12 +516,12 @@ func handleBuff(buff []byte) {
 			}
 
 			if mirror != "" {
-				mirrorPackets[mirror].Write(buff[offset : offset+size])
-				mirrorPackets[mirror].Write(sep)
-				mirrorNumMetrics++
 				if verbose || debuglog {
 					log.Printf("[Mirror] Sending %s to %s", buff[offset:offset+size], mirror)
 				}
+				mirrorPackets[mirror].Write(buff[offset : offset+size])
+				mirrorPackets[mirror].Write(sep)
+				mirrorNumMetrics++
 			}
 			numMetrics++
 			offset = offset + size + 1
@@ -536,11 +533,11 @@ func handleBuff(buff []byte) {
 	statsdropped := fmt.Sprintf("%s:%d|c\n", statsMetricDropped, numMetricsDropped)
 	target := hashRing.GetNode(statsMetric).Server
 	// make stats independent from main buffer to fix sliced metrics
-	go sendPacket([]byte(stats+statsdropped), target, sendproto, TCPtimeout, boff, logonly)
+	sendPacket([]byte(stats+statsdropped), target, sendproto, TCPtimeout, boff, logonly)
 
 	if mirror != "" {
 		stats := fmt.Sprintf("%s:%d|c\n", statsMetric, mirrorNumMetrics)
-		go sendPacket([]byte(stats), target, sendproto, TCPtimeout, boff, logonly)
+		sendPacket([]byte(stats), mirror, mirrorproto, TCPtimeout, boff, false)
 	}
 
 	if numMetrics == 0 {
@@ -550,9 +547,7 @@ func handleBuff(buff []byte) {
 	}
 
 	// Update internal counter
-	totalMetricsLock.Lock()
-	totalMetrics = totalMetrics + numMetrics
-	totalMetricsLock.Unlock()
+	atomic.AddUint32(&totalMetrics, numMetrics)
 
 	// Empty out any remaining data
 	if mirror != "" {
@@ -600,11 +595,6 @@ func readUDP(ip string, port int, handler func([]byte)) {
 		log.Printf("Unable to set read buffer size on socket.  Non-fatal.")
 		log.Println(err)
 	}
-	err = sock.SetDeadline(time.Now().Add(time.Second))
-	if err != nil {
-		log.Printf("Unable to set timeout on socket.\n")
-		log.Fatalln(err)
-	}
 
 	if sendproto == "TCP" {
 		log.Printf("TCP send timeout set to %s", TCPtimeout)
@@ -621,16 +611,13 @@ func readUDP(ip string, port int, handler func([]byte)) {
 
 	buff := make([]byte, BUFFERSIZE)
 	for {
+		sock.SetReadDeadline(time.Now().Add(time.Second))
 		i, err := sock.Read(buff[offset : BUFFERSIZE-1])
 		if err == nil {
 			buff[offset+i] = '\n'
 			offset = offset + i + 1
 		} else if err.(net.Error).Timeout() {
 			timeout = true
-			err = sock.SetDeadline(time.Now().Add(time.Second))
-			if err != nil {
-				log.Panicln(err)
-			}
 		} else {
 			log.Printf("Read Error: %s\n", err)
 			continue
