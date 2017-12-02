@@ -29,7 +29,7 @@ import (
 )
 
 // VERSION shows statsrelay version
-const VERSION string = "0.1.0"
+const VERSION string = "0.2.0"
 
 // BUFFERSIZE controls the size of the [...]byte array used to read UDP data
 // off the wire and into local memory.  Metrics are separated by \n
@@ -176,6 +176,7 @@ func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) ([
 		lastMatchedPolicy string
 		replaced          string
 		matched           int
+		countMatch        int
 		stopMatch         bool = false
 		tagMetric         string
 		sumElapsed        time.Duration
@@ -291,11 +292,15 @@ func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) ([
 			lastMatchedPolicy = policy
 			elapsed = time.Since(start)
 		}
+		countMatch = len(ruleNames)
+		if countMatch == 0 {
+			policy = policyDefault
+		}
 		sumElapsed = time.Since(sumStart)
 		if debuglog {
 			// per match log info
 			// replacePrint(lastMatchedPolicy, matchRule, replaceRule, replaced, len(ruleNames), elapsed)
-			log.Printf("[%s] MatchRule: %s Rule: %s, Final: %s, Match: %d in [%s]", strings.ToUpper(policy), matchRule, replaceRule, replaced, len(ruleNames), elapsed)
+			log.Printf("[%s] MatchRule: %s Rule: %s, Final: %s, Match: %d in [%s]", strings.ToUpper(policy), matchRule, replaceRule, replaced, countMatch, elapsed)
 		}
 		// don't process next rules
 		if stopMatch {
@@ -309,9 +314,9 @@ func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) ([
 	if verbose || debuglog {
 		// summary log info per metric with all matches and replaces
 		//replaceSumPrint(lastMatchedPolicy, ruleNames, replaced, len(ruleNames), sumElapsed)
-		log.Printf("[%s] Rule Names: %s Final: %s, Matches: %d in [%s]", strings.ToUpper(policy), ruleNames, replaced, len(ruleNames), sumElapsed)
+		log.Printf("[%s] Rule Names: %s Final: %s, Matches: %d in [%s]", strings.ToUpper(policy), ruleNames, replaced, countMatch, sumElapsed)
 	}
-	return []byte(replaced), len(ruleNames), lastMatchedPolicy
+	return []byte(replaced), countMatch, lastMatchedPolicy
 }
 
 // getMetricName() parses the given []byte metric as a string, extracts
