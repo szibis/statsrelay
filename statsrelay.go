@@ -7,7 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
-	"log"
+	//"log"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
@@ -17,15 +17,18 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/jpillora/backoff"
-	"github.com/kr/pretty"
+	//"github.com/kr/pretty"
+	"github.com/paulbellamy/ratecounter"
+	zerolog "github.com/rs/zerolog"
+	log "github.com/rs/zerolog/log"
 	"github.com/spf13/viper"
 	"github.com/tevjef/go-runtime-metrics/influxdb"
-	"gopkg.in/go-playground/validator.v9"
+	validator "gopkg.in/go-playground/validator.v9"
 )
 
 // VERSION shows statsrelay version
@@ -54,19 +57,14 @@ var mirror string
 var hashRing = NewJumpHashRing(1)
 
 // totalMetrics tracks the totall number of metrics processed
-var totalMetrics int
-
-// totalMetricsLock is a mutex gaurding totalMetrics
-var totalMetricsLock sync.Mutex
+var totalMetrics uint32
 
 // Time we began
 var epochTime int64
 
-// Verbose output
-var verbose bool
-
-// Debug output
-var debuglog bool
+// loglevel string for setting log level in statsrelay with available options:
+// Debug, Info, Warn, Error, Fatal, Panic and Quiet for quiet mode
+var logLevel string
 
 // Log-only mode
 var logonly bool
@@ -128,6 +126,11 @@ var rulesValidationTest bool
 // watchRulesConfig bool value for enabling watching config changes and reloading runtime values
 var watchRulesConfig bool
 
+// counter int for rate per second of all processed metics
+var counter *ratecounter.RateCounter
+
+var isConsole bool
+
 type rulesDef struct {
 	Rules []struct {
 		Name      string   `mapstructure:"name" validate:"required,gt=0"`
@@ -160,7 +163,8 @@ func getSockBufferMaxSize() (int, error) {
 	data = bytes.TrimRight(data, "\n\r")
 	i, err := strconv.Atoi(string(data))
 	if err != nil {
-		log.Printf("Could not parse /proc/sys/net/core/rmem_max\n")
+		log.Error().
+			Msgf("Could not parse /proc/sys/net/core/rmem_max")
 		return -1, err
 	}
 
@@ -296,12 +300,26 @@ func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) ([
 		if countMatch == 0 {
 			policy = policyDefault
 		}
-		sumElapsed = time.Since(sumStart)
-		if debuglog {
-			// per match log info
-			// replacePrint(lastMatchedPolicy, matchRule, replaceRule, replaced, len(ruleNames), elapsed)
-			log.Printf("[%s] MatchRule: %s Rule: %s, Final: %s, Match: %d in [%s]", strings.ToUpper(policy), matchRule, replaceRule, replaced, countMatch, elapsed)
-		}
+		// per match log info
+		// replacePrint(lastMatchedPolicy, matchRule, replaceRule, replaced, len(ruleNames), elapsed)
+		//logger.Info("[D] Match and replace",
+		//	zap.String("Policy", strings.ToUpper(policy)),
+		//	zap.String("MatchRules", matchRule),
+		//	zap.String("Rule", replaceRule),
+		//	zap.String("Final", replaced),
+		//	zap.Int("Match", countMatch),
+		//	zap.Duration("Elapsed", elapsed),
+		//)
+		log.Debug().
+			Str("policy", strings.ToUpper(policy)).
+			Str("rule-matched", matchRule).
+			Str("replace-rule", replaceRule).
+			Str("replaced", replaced).
+			Int("matches", countMatch).
+			Dur("replace-time", elapsed).
+			Msg("Single rule match")
+			//	Msgf("[%s] MatchRule: %s Rule: %s, Final: %s, Match: %d in [%s]", strings.ToUpper(policy), matchRule, replaceRule, replaced, countMatch, elapsed)
+			//log.Print("[%s] MatchRule: %s Rule: %s, Final: %s, Match: %d in [%s]", strings.ToUpper(policy), matchRule, replaceRule, replaced, countMatch, elapsed)
 		// don't process next rules
 		if stopMatch {
 			break
@@ -311,11 +329,25 @@ func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) ([
 	if len(ruleNames) == 0 {
 		lastMatchedPolicy = defaultPolicy
 	}
-	if verbose || debuglog {
-		// summary log info per metric with all matches and replaces
-		//replaceSumPrint(lastMatchedPolicy, ruleNames, replaced, len(ruleNames), sumElapsed)
-		log.Printf("[%s] Rule Names: %s Final: %s, Matches: %d in [%s]", strings.ToUpper(policy), ruleNames, replaced, countMatch, sumElapsed)
-	}
+	sumElapsed = time.Since(sumStart)
+	// summary log info per metric with all matches and replaces
+	//replaceSumPrint(lastMatchedPolicy, ruleNames, replaced, len(ruleNames), sumElapsed)
+	log.Info().
+		Str("policy", strings.ToUpper(policy)).
+		Str("rules-matched", strings.Join(ruleNames, ",")).
+		Str("replaced", replaced).
+		Int("matches", countMatch).
+		Dur("replace-time", sumElapsed).
+		Msg("All rules match")
+		//Msgf("[%s] Rule Names: %s Final: %s, Matches: %d in [%s]", strings.ToUpper(policy), ruleNames, replaced, countMatch, sumElapsed)
+		//log.Print("[%s] Rule Names: %s Final: %s, Matches: %d in [%s]", strings.ToUpper(policy), ruleNames, replaced, countMatch, sumElapsed)
+		//logger.Info("[S] Match and replace",
+		//	zap.String("Policy", strings.ToUpper(policy)),
+		//	zap.Strings("MatchRules", ruleNames),
+		//	zap.String("Final", replaced),
+		//	zap.Int("Match", countMatch),
+		//	zap.Duration("Elapsed", sumElapsed),
+		//)
 	return []byte(replaced), countMatch, lastMatchedPolicy
 }
 
@@ -355,7 +387,9 @@ func sendPacket(buff []byte, target string, sendproto string, TCPtimeout time.Du
 		if !logonly {
 			conn, err := net.ListenUDP("udp", nil)
 			if err != nil {
-				log.Panicln(err)
+				log.Panic().
+					Err(err)
+				//log.Panicln(err)
 			}
 			conn.WriteToUDP(buff, udpAddr[target])
 			conn.Close()
@@ -366,24 +400,25 @@ func sendPacket(buff []byte, target string, sendproto string, TCPtimeout time.Du
 				conn, err := net.DialTimeout("tcp", target, TCPtimeout)
 				if err != nil {
 					doff := boff.Duration()
-					log.Printf("TCP error for %s - %s [Reconnecting in %s, retries left %d/%d]\n",
-						target, err, doff, TCPMaxRetries-i, TCPMaxRetries)
+					log.Warn().
+						Msgf("TCP error for %s - %s [Reconnecting in %s, retries left %d/%d]",
+							target, err, doff, TCPMaxRetries-i, TCPMaxRetries)
 					time.Sleep(doff)
 					continue
 				}
 				conn.Write(buff)
 				boff.Reset()
-				defer conn.Close()
+				conn.Close()
 				break
 			}
 		}
 	case "TEST":
-		if verbose || debuglog {
-			log.Printf("Debug: Would have sent packet of %d bytes to %s",
-				len(buff), target)
-		}
+		log.Debug().
+			Msgf("Debug: Would have sent packet of %d bytes to %s", len(buff), target)
 	default:
-		log.Fatalf("Illegal send protocol %s", sendproto)
+		log.Fatal().
+			Msgf("Illegal send protocol %s", sendproto)
+		//log.Fatalf("Illegal send protocol %s", sendproto)
 	}
 }
 
@@ -413,9 +448,9 @@ func handleBuff(buff []byte) {
 		mirrorPackets[mirror] = new(bytes.Buffer)
 	}
 	sep := []byte("\n")
-	numMetrics := 0
-	numMetricsDropped := 0
-	mirrorNumMetrics := 0
+	numMetrics := uint32(0)
+	numMetricsDropped := uint32(0)
+	mirrorNumMetrics := uint32(0)
 	statsMetric := prefix + ".statsProcessed"
 	statsMetricDropped := prefix + ".statsDropped"
 	policy := defaultPolicy
@@ -464,36 +499,41 @@ func handleBuff(buff []byte) {
 			if mirror != "" {
 				// check built packet size and send if metric doesn't fit
 				if mirrorPackets[mirror].Len()+size > packetLen {
-					go sendPacket(mirrorPackets[mirror].Bytes(), mirror, mirrorproto, TCPtimeout, boff, false)
+					sendPacket(mirrorPackets[mirror].Bytes(), mirror, mirrorproto, TCPtimeout, boff, false)
 					mirrorPackets[mirror].Reset()
 				}
 			}
 			// check built packet size and send if metric doesn't fit
 			if packets[target].Len()+size > packetLen {
-				go sendPacket(packets[target].Bytes(), target, sendproto, TCPtimeout, boff, logonly)
+				sendPacket(packets[target].Bytes(), target, sendproto, TCPtimeout, boff, logonly)
 				packets[target].Reset()
 			}
 			// add to packet
 			if len(Rules.Rules) != 0 {
-
 				buffNew, matched, policy := metricMatchReplace(string(buff[offset:offset+size]), &Rules, policy)
 				// send replaced metric
 				if matched > 0 {
-					if verbose || debuglog {
-						if policy == "pass" {
-							log.Printf("Sending %s to %s", buffNew, target)
-						} else if policy == "drop" {
-							log.Printf("Dropping %s", buffNew)
-						}
+					if policy == "pass" {
+						log.Info().
+							Str("metric", string(buffNew)).
+							Str("target", target).
+							Msg("sending")
+					} else if policy == "drop" {
+						log.Info().
+							Str("metric", string(buffNew)).
+							Msgf("dropping")
 					}
 				} else {
 					// don't replace metric if there's no rule match
-					if verbose || debuglog {
-						if policy == "pass" {
-							log.Printf("Sending %s to %s", metric, target)
-						} else if policy == "drop" {
-							log.Printf("Dropping %s", metric)
-						}
+					if policy == "pass" {
+						log.Info().
+							Str("metric", string(buffNew)).
+							Str("target", target).
+							Msg("sending")
+					} else if policy == "drop" {
+						log.Info().
+							Str("metric", string(buffNew)).
+							Msgf("dropping")
 					}
 				}
 				if policy == "pass" {
@@ -505,26 +545,28 @@ func handleBuff(buff []byte) {
 				// send unchanged metric
 			} else {
 				if policy == "drop" {
-					if verbose || debuglog {
-						log.Printf("Drop %s to %s", metric, target)
-					}
+					log.Debug().
+						Str("metric", metric).
+						Msgf("dropping")
 					numMetricsDropped++
 				} else if policy == "pass" {
-					if verbose || debuglog {
-						log.Printf("Sending %s to %s", metric, target)
-					}
+					log.Info().
+						Str("metric", metric).
+						Str("target", target).
+						Msg("sending")
 					packets[target].Write(buff[offset : offset+size])
 					packets[target].Write(sep)
 				}
 			}
 
 			if mirror != "" {
+				log.Debug().
+					Str("metric", string(buff[offset:offset+size])).
+					Str("target", target).
+					Msgf("mirror sending")
 				mirrorPackets[mirror].Write(buff[offset : offset+size])
 				mirrorPackets[mirror].Write(sep)
 				mirrorNumMetrics++
-				if verbose || debuglog {
-					log.Printf("[Mirror] Sending %s to %s", buff[offset:offset+size], mirror)
-				}
 			}
 			numMetrics++
 			offset = offset + size + 1
@@ -536,11 +578,11 @@ func handleBuff(buff []byte) {
 	statsdropped := fmt.Sprintf("%s:%d|c\n", statsMetricDropped, numMetricsDropped)
 	target := hashRing.GetNode(statsMetric).Server
 	// make stats independent from main buffer to fix sliced metrics
-	go sendPacket([]byte(stats+statsdropped), target, sendproto, TCPtimeout, boff, logonly)
+	sendPacket([]byte(stats+statsdropped), target, sendproto, TCPtimeout, boff, logonly)
 
 	if mirror != "" {
 		stats := fmt.Sprintf("%s:%d|c\n", statsMetric, mirrorNumMetrics)
-		go sendPacket([]byte(stats), target, sendproto, TCPtimeout, boff, logonly)
+		sendPacket([]byte(stats), mirror, mirrorproto, TCPtimeout, boff, false)
 	}
 
 	if numMetrics == 0 {
@@ -550,9 +592,7 @@ func handleBuff(buff []byte) {
 	}
 
 	// Update internal counter
-	totalMetricsLock.Lock()
-	totalMetrics = totalMetrics + numMetrics
-	totalMetricsLock.Unlock()
+	atomic.AddUint32(&totalMetrics, numMetrics)
 
 	// Empty out any remaining data
 	if mirror != "" {
@@ -568,10 +608,21 @@ func handleBuff(buff []byte) {
 	}
 	handleElapsed := time.Since(handleStart)
 
-	if verbose || debuglog && time.Now().Unix()-epochTime > 0 {
-		log.Printf("Processed %d metrics in %s. Dropped %d metrics. Running total: %d. Metrics/sec: %d\n",
-			numMetrics-numMetricsDropped, handleElapsed, numMetricsDropped, totalMetrics,
-			int64(totalMetrics)/(time.Now().Unix()-epochTime))
+	counter = ratecounter.NewRateCounter(1 * time.Second)
+
+	if time.Now().Unix()-epochTime > 0 {
+		rate := int64(totalMetrics) / (time.Now().Unix() - epochTime)
+		log.Warn().
+			Uint32("processed", numMetrics-numMetricsDropped).
+			Dur("processing-time", handleElapsed).
+			Uint32("dropped", numMetricsDropped).
+			Uint32("processed-total", totalMetrics).
+			Int64("rate", rate).
+			//Int32("rate", int32(counter)).
+			Msg("Processing stats")
+		//Msgf("Processed %d metrics in %s. Dropped %d metrics. Running total: %d. Metrics/sec: %d",
+		//	numMetrics-numMetricsDropped, handleElapsed, numMetricsDropped, totalMetrics,
+		//	int64(totalMetrics)/(time.Now().Unix()-epochTime))
 	}
 }
 
@@ -585,54 +636,61 @@ func readUDP(ip string, port int, handler func([]byte)) {
 		IP:   net.ParseIP(ip),
 	}
 
-	log.Printf("Starting version %s", VERSION)
-	log.Printf("Listening on %s:%d\n", ip, port)
+	log.Info().
+		Msgf("Setting up log to %s level", logLevel)
+
+	log.Info().
+		Msgf("Starting version %s", VERSION)
+	log.Info().
+		Msgf("Listening on %s:%d", ip, port)
 	sock, err := net.ListenUDP("udp", &addr)
 	if err != nil {
-		log.Printf("Error opening UDP socket.\n")
-		log.Fatalln(err)
+		log.Fatal().
+			Err(err).
+			Msgf("Error opening UDP socket.")
+		//log.Fatalln(err)
 	}
 	defer sock.Close()
 
-	log.Printf("Setting socket read buffer size to: %d\n", bufferMaxSize)
+	log.Info().
+		Msgf("Setting socket read buffer size to: %d", bufferMaxSize)
+
 	err = sock.SetReadBuffer(bufferMaxSize)
 	if err != nil {
-		log.Printf("Unable to set read buffer size on socket.  Non-fatal.")
-		log.Println(err)
-	}
-	err = sock.SetDeadline(time.Now().Add(time.Second))
-	if err != nil {
-		log.Printf("Unable to set timeout on socket.\n")
-		log.Fatalln(err)
+		err = sock.SetDeadline(time.Now().Add(time.Second))
+		log.Error().
+			Err(err).
+			Msg("Unable to set read buffer size on socket.  Non-fatal.")
 	}
 
 	if sendproto == "TCP" {
-		log.Printf("TCP send timeout set to %s", TCPtimeout)
-		log.Printf("TCP Backoff set Min: %s Max: %s Factor: %f Retries: %d", TCPMinBackoff, TCPMaxBackoff, TCPFactorBackoff, TCPMaxRetries)
+		log.Info().
+			Msgf("TCP send timeout set to %s", TCPtimeout)
+		log.Info().
+			Msgf("TCP Backoff set Min: %s Max: %s Factor: %f Retries: %d", TCPMinBackoff, TCPMaxBackoff, TCPFactorBackoff, TCPMaxRetries)
 	}
 
 	if logonly {
-		log.Printf("Log Only for rules Eanbled\n")
+		log.Info().
+			Msgf("Log Only for rules Eanbled")
 	}
 
-	if verbose || debuglog {
-		log.Printf("Rock and Roll!\n")
-	}
+	log.Info().
+		Msgf("Rock and Roll!")
 
 	buff := make([]byte, BUFFERSIZE)
 	for {
+		sock.SetReadDeadline(time.Now().Add(time.Second))
 		i, err := sock.Read(buff[offset : BUFFERSIZE-1])
 		if err == nil {
 			buff[offset+i] = '\n'
 			offset = offset + i + 1
 		} else if err.(net.Error).Timeout() {
 			timeout = true
-			err = sock.SetDeadline(time.Now().Add(time.Second))
-			if err != nil {
-				log.Panicln(err)
-			}
 		} else {
-			log.Printf("Read Error: %s\n", err)
+			log.Error().
+				Err(err).
+				Msgf("Read Error")
 			continue
 		}
 
@@ -662,11 +720,11 @@ func runServer(host string, port int) {
 	// for {
 	// 	select {
 	// 	case buff := <-c:
-	// 		//fmt.Printf("Handling %d length buffer...\n", len(buff))
+	// 		//fmt.Print("Handling %d length buffer...\n", len(buff))
 	// 		handleBuff(buff)
 	// 	case <-sig:
-	// 		log.Printf("Signal received.  Shutting down...\n")
-	// 		log.Printf("Received %d metrics.\n", totalMetrics)
+	// 		log.Print("Signal received.  Shutting down...\n")
+	// 		log.Print("Received %d metrics.\n", totalMetrics)
 	// 		return
 	// 	}
 	// }
@@ -680,22 +738,33 @@ func validateHost(address string) (*net.UDPAddr, error) {
 
 	switch len(host) {
 	case 1:
-		log.Printf("Invalid statsd location: %s\n", address)
-		log.Fatalf("Must be of the form HOST:PORT or HOST:PORT:INSTANCE\n")
+		log.Error().
+			Msgf("Invalid statsd location: %s", address)
+		log.Fatal().
+			Msgf("Must be of the form HOST:PORT or HOST:PORT:INSTANCE")
+		//log.Fatal("Must be of the form HOST:PORT or HOST:PORT:INSTANCE\n")
 	case 2:
 		addr, err = net.ResolveUDPAddr("udp", address)
 		if err != nil {
-			log.Printf("Error parsing HOST:PORT \"%s\"\n", address)
-			log.Fatalf("%s\n", err.Error())
+			log.Error().
+				Msgf("Error parsing HOST:PORT \"%s\"", address)
+			log.Fatal().
+				Msgf("%s", err.Error())
+			//log.Fatal("%s\n", err.Error())
 		}
 	case 3:
 		addr, err = net.ResolveUDPAddr("udp", host[0]+":"+host[1])
 		if err != nil {
-			log.Printf("Error parsing HOST:PORT:INSTANCE \"%s\"\n", address)
-			log.Fatalf("%s\n", err.Error())
+			log.Error().
+				Msgf("Error parsing HOST:PORT:INSTANCE \"%s\"", address)
+			log.Fatal().
+				Msgf("%s", err.Error())
+			//log.Fatalf("%s\n", err.Error())
 		}
 	default:
-		log.Fatalf("Unrecongnized host specification: %s\n", address)
+		log.Fatal().
+			Msgf("Unrecongnized host specification: %s", address)
+		//log.Fatalf("Unrecongnized host specification: %s\n", address)
 	}
 	return addr, err
 }
@@ -705,7 +774,9 @@ func validatePolicy(policy string) {
 	validate := validator.New()
 	err := validate.Var(policy, "eq=pass|eq=drop")
 	if err != nil {
-		log.Fatal("Policy must equal \"pass\" or \"drop\"")
+		log.Fatal().
+			Msgf("Policy must equal \"pass\" or \"drop\"")
+		//log.Fatal("Policy must equal \"pass\" or \"drop\"")
 	}
 }
 
@@ -725,20 +796,25 @@ func validateRules(rulesFile string, rulesDir string, exitOnErrors bool) map[str
 	err := rules.ReadInConfig()
 	if err != nil {
 		rulesErrors["config_parsing"] = []string{err.Error()}
-		log.Printf("Fatal error wile reading rules config: %s\n", err)
+		log.Error().
+			Err(err).
+			Msgf("Fatal error wile reading rules config")
 	}
 
 	err = rules.Unmarshal(&rulesValidator)
 	if err != nil {
 		rulesErrors["config_unmarshall"] = []string{err.Error()}
-		log.Printf("Fatal error while loading rules: %s\n", err)
+		log.Error().
+			Err(err).
+			Msgf("Fatal error while loading rules")
 	}
 
 	for _, r := range rulesValidator.Rules {
 		err := validate.Struct(r)
 		if err != nil {
 			if _, ok := err.(*validator.InvalidValidationError); ok {
-				fmt.Println(err)
+				log.Error().
+					Err(err)
 			}
 			var errorArr []string
 			for _, err := range err.(validator.ValidationErrors) {
@@ -754,11 +830,13 @@ func validateRules(rulesFile string, rulesDir string, exitOnErrors bool) map[str
 	}
 	// log misconfigured rules
 	if len(rulesErrors) > 0 {
-		log.Println("Rules config has errors. Fix below rule definitions:")
+		log.Error().
+			Msg("Rules config has errors. Fix below rule definitions:")
 		for ruleName, errors := range rulesErrors {
-			log.Printf("\tRule: %s\n", ruleName)
+			log.Print("\tRule: %s", ruleName)
 			for _, err := range errors {
-				log.Printf("\t\t %s\n", err)
+				log.Error().
+					Msgf("\t\t %s", err)
 			}
 		}
 		if exitOnErrors {
@@ -787,10 +865,7 @@ func main() {
 
 	flag.IntVar(&maxprocs, "maxprocs", 0, "Set GOMAXPROCS in runtime. If not defined then Golang defaults.")
 
-	flag.BoolVar(&verbose, "verbose", false, "Verbose output")
-	flag.BoolVar(&verbose, "v", false, "Verbose output")
-
-	flag.BoolVar(&debuglog, "debug", false, "Debug output")
+	flag.StringVar(&logLevel, "loglevel", "info", "Available options: debug, info, warn, error, fatal, panic and quiet for quiet mode")
 
 	flag.BoolVar(&logonly, "log-only", false, "Log-only mode: doesn't send metrics, just logs the output")
 	flag.BoolVar(&logonly, "l", false, "Log-only mode: doesn't send metrics, just logs the output")
@@ -819,6 +894,8 @@ func main() {
 	flag.StringVar(&defaultPolicy, "default-policy", "drop", "Default rules policy. Options: drop|pass")
 	flag.StringVar(&defaultPolicy, "d", "drop", "Default rules policy. Options: drop|pass")
 
+	flag.BoolVar(&isConsole, "consoleout", false, "Statsrelay console out without JSON production formatting")
+
 	flag.BoolVar(&version, "version", false, "Statsrelay version")
 
 	defaultBufferSize, err := getSockBufferMaxSize()
@@ -831,9 +908,35 @@ func main() {
 	flag.Parse()
 
 	if version {
-		fmt.Printf("%s\n", VERSION)
+		fmt.Print("%s\n", VERSION)
 		os.Exit(0)
 	}
+
+	switch logLevel {
+	case "debug":
+		zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	case "info":
+		zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	case "warn":
+		zerolog.SetGlobalLevel(zerolog.WarnLevel)
+	case "error":
+		zerolog.SetGlobalLevel(zerolog.ErrorLevel)
+	case "fatal":
+		zerolog.SetGlobalLevel(zerolog.FatalLevel)
+	case "panic":
+		zerolog.SetGlobalLevel(zerolog.PanicLevel)
+	case "quiet":
+		zerolog.SetGlobalLevel(zerolog.NoLevel)
+	default:
+		zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	}
+	zerolog.DurationFieldUnit = time.Millisecond
+	zerolog.DurationFieldInteger = false
+
+	//if isConsole {
+	//	log := zerolog.New(os.Stdout).Output(zerolog.ConsoleWriter{Out: os.Stdout})
+	//	//log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout})
+	//}
 
 	// viper config rules loading
 	if rulesConfig != "" {
@@ -849,31 +952,38 @@ func main() {
 			os.Exit(1)
 		}
 		if rulesValidationTest {
-			log.Printf("All rules in %s are correct.\n", rulesConfig)
+			log.Info().
+				Msgf("All rules in %s are correct.", rulesConfig)
 			os.Exit(0)
 		}
 
-		log.Printf("Setting rules config file: %s \n", rulesConfig)
+		log.Info().
+			Msgf("Setting rules config file: %s", rulesConfig)
 		viper.SetConfigType("yaml")
 		viper.SetConfigName(strings.Split(rulesFile, ".")[0])
 		viper.AddConfigPath(rulesDir)
 
 		err = viper.ReadInConfig()
 		if err != nil {
-			log.Fatalf("Error reading rules file: %s \n", err)
+			log.Fatal().
+				Msgf("Error reading rules file: %s", err)
+			//log.Fatalf("Error reading rules file: %s \n", err)
 		}
 		if err := viper.Unmarshal(&Rules); err != nil {
-			log.Fatalf("Fatal error loading rules: %s \n", err)
+			log.Fatal().
+				Msgf("Fatal error loading rules: %s", err)
+			//log.Fatalf("Fatal error loading rules: %s \n", err)
 		}
-		if verbose {
-			pretty.Println(Rules)
-		}
+		//if logLevel == "DebugLevel" {
+		//	pretty.Print(Rules)
+		//}
 
 		// config watch and live reload
 		if watchRulesConfig {
 			viper.WatchConfig()
 			viper.OnConfigChange(func(e fsnotify.Event) {
-				log.Println("Config file changed:", e.Name)
+				log.Info().
+					Msgf("Config file changed:", e.Name)
 				// reread config if no errors, use old config otherwise
 				if len(validateRules(rulesFile, rulesDir, false)) == 0 {
 					// create temporary variable for assigning its value to main Rules
@@ -882,39 +992,53 @@ func main() {
 					tmpRules := rulesDef{}
 					err := viper.Unmarshal(&tmpRules)
 					if err != nil {
-						log.Fatalf("Fatal error loading rules: %s \n", err)
+						log.Fatal().
+							Err(err).
+							Msgf("Fatal error loading rules")
+						//log.Fatalf("Fatal error loading rules: %s \n", err)
 					}
 					Rules = tmpRules
-					if verbose {
-						pretty.Println(Rules)
-					}
+					//if logLevel == "DebugLevel" {
+					//	pretty.Print(Rules)
+					//}
 				} else {
-					log.Println("Using old rules config. Fix above errors to apply new config.")
+					log.Info().
+						Msgf("Using old rules config. Fix above errors to apply new config.")
 				}
 			})
 		}
 	}
 
 	if len(flag.Args()) == 0 {
-		log.Fatalf("One or more host specifications are needed to locate statsd daemons.\n")
+		log.Fatal().
+			Msgf("One or more host specifications are needed to locate statsd daemons.")
+		//log.Fatalf("One or more host specifications are needed to locate statsd daemons.\n")
 	}
 
 	if maxprocs != 0 {
-		log.Printf("Using GOMAXPROCS %d", maxprocs)
+		log.Info().
+			Msgf("Using GOMAXPROCS %d", maxprocs)
 		runtime.GOMAXPROCS(maxprocs)
 	}
 
 	if profiling {
 		// profiling web server
 		go func() {
-			log.Println(http.ListenAndServe(profilingBind, nil))
+			log.Print(http.ListenAndServe(profilingBind, nil))
 		}()
 
 		// /debug/vars endpoint on profiling web server
 		expvar.Publish("stats", influxdb.Metrics("statsrelay_internals"))
+		//              expvar.Publish("ProcessedPerSecond", counter)
+		//		expvar.Publish("Processed", numMetrics-numMetricsDropped)
+		//		expvar.Publish("Dropped", numMetricsDropped)
+		//		expvar.Publlish("ProcessedTotal", totalMetrics)
+		//		expvar.Publlish("ProcessingTime", handleElapsed)
 
 		if err != nil {
-			log.Fatalf("Unable to set /debug/vars metrics internals endpoint on %s with error: %q", profilingBind, err)
+			log.Fatal().
+				Msgf("Unable to set /debug/vars metrics internals endpoint on %s with error: %q", profilingBind, err)
+			//log.Fatalf("Unable to set /debug/vars metrics internals endpoint on %s with error: %q", profilingBind, err)
 		}
 	}
 
@@ -924,7 +1048,8 @@ func main() {
 		if addr != nil {
 			udpAddr[mirror] = addr
 		}
-		log.Printf("Setting up mirroring to %s", mirror)
+		log.Info().
+			Msgf("Setting up mirroring to %s", mirror)
 	}
 	for _, v := range flag.Args() {
 		addr, _ := validateHost(v)
@@ -937,5 +1062,6 @@ func main() {
 	epochTime = time.Now().Unix()
 	runServer(bindAddress, port)
 
-	log.Printf("Normal shutdown.\n")
+	log.Warn().
+		Msgf("Normal shutdown.")
 }
