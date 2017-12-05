@@ -7,17 +7,18 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
-	//"log"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -139,9 +140,14 @@ type rulesDef struct {
 		Policy    string   `mapstructure:"policy" validate:"eq=pass|eq=drop"`
 		StopMatch bool     `mapstructure:"stop_match" validate:"-"`
 		Tags      []string `mapstructure:"tags" validate:"unique"`
-
-		reMatch *regexp.Regexp
+		reMatch   *regexp.Regexp
 	} `mapstructure:"rules"`
+}
+
+type replaceStruct struct {
+	Replaced   string
+	countMatch int
+	lastPolicy string
 }
 
 // Rules to rulesDef struct
@@ -172,7 +178,7 @@ func getSockBufferMaxSize() (int, error) {
 }
 
 // metricMatchReplace() matches metric based on regexp definition rules
-func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) ([]byte, int, string) {
+func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) replaceStruct {
 	var (
 		matchRule         string
 		replaceRule       string
@@ -185,6 +191,7 @@ func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) ([
 		tagMetric         string
 		sumElapsed        time.Duration
 		elapsed           time.Duration
+		returnStruct      replaceStruct
 	)
 
 	ruleNames := make([]string, 0)
@@ -203,8 +210,9 @@ func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) ([
 			policy = policyDefault
 		}
 		if replaced == "" {
+			log.Info().
+				Msgf("metric before: %s", metric)
 			start := time.Now()
-			//matchRule, matched, replaceRule, replaced, policy, elapsed, stopMatch = replaceLogic(string(metric), rTags, rReplace, rMatch, rStopMatch, ppolicy)
 			match := re.FindAllString(metric, -1)
 			// send unchanged metric if no match and go to next rule
 			if match == nil {
@@ -222,6 +230,8 @@ func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) ([
 					replaced = re.ReplaceAllString(metric, rrules[i].Replace)
 				}
 			}
+			log.Info().
+				Msgf("metric after replace: %s", metric)
 			elapsed = time.Since(start)
 			// TODO: review below conditions and try to simplify them
 			if policy == "drop" {
@@ -250,8 +260,9 @@ func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) ([
 			lastMatchedPolicy = policy
 			// if metric was replaced before use it against next rules
 		} else {
+			log.Info().
+				Msgf("replace before replace: %s", replaced)
 			start := time.Now()
-			//matchRule, matched, replaceRule, replaced, policy, elapsed, stopMatch = replaceLogic(replaced, rTags, rReplace, rMatch, rStopMatch, ppolicy)
 			match := re.FindAllString(replaced, -1)
 			// send unchanged metric if no match and go to next rule
 			if match == nil {
@@ -269,6 +280,8 @@ func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) ([
 					replaced = re.ReplaceAllString(replaced, rrules[i].Replace)
 				}
 			}
+			log.Info().
+				Msgf("replace after replace: %s", replaced)
 			// TODO: review below conditions and try to simplify them
 			if policy == "drop" {
 				// drop and stop processing
@@ -301,15 +314,6 @@ func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) ([
 			policy = policyDefault
 		}
 		// per match log info
-		// replacePrint(lastMatchedPolicy, matchRule, replaceRule, replaced, len(ruleNames), elapsed)
-		//logger.Info("[D] Match and replace",
-		//	zap.String("Policy", strings.ToUpper(policy)),
-		//	zap.String("MatchRules", matchRule),
-		//	zap.String("Rule", replaceRule),
-		//	zap.String("Final", replaced),
-		//	zap.Int("Match", countMatch),
-		//	zap.Duration("Elapsed", elapsed),
-		//)
 		log.Debug().
 			Str("policy", strings.ToUpper(policy)).
 			Str("rule-matched", matchRule).
@@ -318,7 +322,6 @@ func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) ([
 			Int("matches", countMatch).
 			Dur("replace-time", elapsed).
 			Msg("Single rule match")
-			//	Msgf("[%s] MatchRule: %s Rule: %s, Final: %s, Match: %d in [%s]", strings.ToUpper(policy), matchRule, replaceRule, replaced, countMatch, elapsed)
 			//log.Print("[%s] MatchRule: %s Rule: %s, Final: %s, Match: %d in [%s]", strings.ToUpper(policy), matchRule, replaceRule, replaced, countMatch, elapsed)
 		// don't process next rules
 		if stopMatch {
@@ -331,7 +334,6 @@ func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) ([
 	}
 	sumElapsed = time.Since(sumStart)
 	// summary log info per metric with all matches and replaces
-	//replaceSumPrint(lastMatchedPolicy, ruleNames, replaced, len(ruleNames), sumElapsed)
 	log.Info().
 		Str("policy", strings.ToUpper(policy)).
 		Str("rules-matched", strings.Join(ruleNames, ",")).
@@ -339,16 +341,10 @@ func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) ([
 		Int("matches", countMatch).
 		Dur("replace-time", sumElapsed).
 		Msg("All rules match")
-		//Msgf("[%s] Rule Names: %s Final: %s, Matches: %d in [%s]", strings.ToUpper(policy), ruleNames, replaced, countMatch, sumElapsed)
-		//log.Print("[%s] Rule Names: %s Final: %s, Matches: %d in [%s]", strings.ToUpper(policy), ruleNames, replaced, countMatch, sumElapsed)
-		//logger.Info("[S] Match and replace",
-		//	zap.String("Policy", strings.ToUpper(policy)),
-		//	zap.Strings("MatchRules", ruleNames),
-		//	zap.String("Final", replaced),
-		//	zap.Int("Match", countMatch),
-		//	zap.Duration("Elapsed", sumElapsed),
-		//)
-	return []byte(replaced), countMatch, lastMatchedPolicy
+	returnStruct = replaceStruct{Replaced: replaced, countMatch: countMatch, lastPolicy: lastMatchedPolicy}
+	log.Info().
+		Msgf("struct: %s", returnStruct)
+	return returnStruct
 }
 
 // getMetricName() parses the given []byte metric as a string, extracts
@@ -454,6 +450,7 @@ func handleBuff(buff []byte) {
 	statsMetric := prefix + ".statsProcessed"
 	statsMetricDropped := prefix + ".statsDropped"
 	policy := defaultPolicy
+	var replacedStruct replaceStruct
 
 	boff := &backoff.Backoff{
 		Min:    TCPMinBackoff,
@@ -499,18 +496,23 @@ func handleBuff(buff []byte) {
 			if mirror != "" {
 				// check built packet size and send if metric doesn't fit
 				if mirrorPackets[mirror].Len()+size > packetLen {
-					sendPacket(mirrorPackets[mirror].Bytes(), mirror, mirrorproto, TCPtimeout, boff, false)
+					go sendPacket(mirrorPackets[mirror].Bytes(), mirror, mirrorproto, TCPtimeout, boff, false)
 					mirrorPackets[mirror].Reset()
 				}
 			}
 			// check built packet size and send if metric doesn't fit
 			if packets[target].Len()+size > packetLen {
-				sendPacket(packets[target].Bytes(), target, sendproto, TCPtimeout, boff, logonly)
+				go sendPacket(packets[target].Bytes(), target, sendproto, TCPtimeout, boff, logonly)
 				packets[target].Reset()
 			}
 			// add to packet
 			if len(Rules.Rules) != 0 {
-				buffNew, matched, policy := metricMatchReplace(string(buff[offset:offset+size]), &Rules, policy)
+				go func() {
+					replacedStruct = metricMatchReplace(string(buff[offset:offset+size]), &Rules, policy)
+				}()
+				buffNew := []byte(replacedStruct.Replaced)
+				matched := replacedStruct.countMatch
+				policy := replacedStruct.lastPolicy
 				// send replaced metric
 				if matched > 0 {
 					if policy == "pass" {
@@ -628,7 +630,8 @@ func handleBuff(buff []byte) {
 
 // readUDP() a goroutine that just reads data off of a UDP socket and fills
 // buffers.  Once a buffer is full, it passes it to handleBuff().
-func readUDP(ip string, port int, handler func([]byte)) {
+//func readUDP(ip string, port int, handler func([]byte)) {
+func readUDP(ip string, port int, c chan []byte) {
 	var offset int
 	var timeout bool
 	var addr = net.UDPAddr{
@@ -636,12 +639,12 @@ func readUDP(ip string, port int, handler func([]byte)) {
 		IP:   net.ParseIP(ip),
 	}
 
-	log.Info().
+	log.Warn().
 		Msgf("Setting up log to %s level", logLevel)
 
-	log.Info().
+	log.Warn().
 		Msgf("Starting version %s", VERSION)
-	log.Info().
+	log.Warn().
 		Msgf("Listening on %s:%d", ip, port)
 	sock, err := net.ListenUDP("udp", &addr)
 	if err != nil {
@@ -652,7 +655,7 @@ func readUDP(ip string, port int, handler func([]byte)) {
 	}
 	defer sock.Close()
 
-	log.Info().
+	log.Warn().
 		Msgf("Setting socket read buffer size to: %d", bufferMaxSize)
 
 	err = sock.SetReadBuffer(bufferMaxSize)
@@ -664,18 +667,18 @@ func readUDP(ip string, port int, handler func([]byte)) {
 	}
 
 	if sendproto == "TCP" {
-		log.Info().
+		log.Warn().
 			Msgf("TCP send timeout set to %s", TCPtimeout)
-		log.Info().
+		log.Warn().
 			Msgf("TCP Backoff set Min: %s Max: %s Factor: %f Retries: %d", TCPMinBackoff, TCPMaxBackoff, TCPFactorBackoff, TCPMaxRetries)
 	}
 
 	if logonly {
-		log.Info().
+		log.Warn().
 			Msgf("Log Only for rules Eanbled")
 	}
 
-	log.Info().
+	log.Warn().
 		Msgf("Rock and Roll!")
 
 	buff := make([]byte, BUFFERSIZE)
@@ -697,7 +700,8 @@ func readUDP(ip string, port int, handler func([]byte)) {
 		if offset > BUFFERSIZE-4096 || timeout {
 			// Approaching make buff size
 			// we use a 4KiB margin
-			handler(buff[:offset])
+			//handler(buff[:offset])
+			c <- buff[:offset]
 			offset = 0
 			timeout = false
 		}
@@ -707,27 +711,28 @@ func readUDP(ip string, port int, handler func([]byte)) {
 // runServer() runs and manages this daemon, deals with OS signals, and handles
 // communication channels.
 func runServer(host string, port int) {
-	// var c = make(chan []byte, BUFFERSIZE)
+	var c = make(chan []byte, BUFFERSIZE)
 	// Set up channel on which to send signal notifications.
 	// We must use a buffered channel or risk missing the signal
 	// if we're not ready to receive when the signal is sent.
-	// var sig = make(chan os.Signal, 1)
-	// signal.Notify(sig, os.Interrupt, os.Kill, syscall.SIGTERM)
+	var sig = make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, os.Kill, syscall.SIGTERM)
 
 	// read incoming UDP packets
-	readUDP(host, port, handleBuff)
+	//readUDP(host, port, handleBuff)
+	go readUDP(host, port, c)
 
-	// for {
-	// 	select {
-	// 	case buff := <-c:
-	// 		//fmt.Print("Handling %d length buffer...\n", len(buff))
-	// 		handleBuff(buff)
-	// 	case <-sig:
-	// 		log.Print("Signal received.  Shutting down...\n")
-	// 		log.Print("Received %d metrics.\n", totalMetrics)
-	// 		return
-	// 	}
-	// }
+	for {
+		select {
+		case buff := <-c:
+			//fmt.Print("Handling %d length buffer...\n", len(buff))
+			handleBuff(buff)
+		case <-sig:
+			log.Print("Signal received.  Shutting down...\n")
+			log.Print("Received %d metrics.\n", totalMetrics)
+			return
+		}
+	}
 }
 
 // validateHost() checks if given HOST:PORT:INSTANCE address is in proper format
@@ -952,12 +957,12 @@ func main() {
 			os.Exit(1)
 		}
 		if rulesValidationTest {
-			log.Info().
+			log.Warn().
 				Msgf("All rules in %s are correct.", rulesConfig)
 			os.Exit(0)
 		}
 
-		log.Info().
+		log.Warn().
 			Msgf("Setting rules config file: %s", rulesConfig)
 		viper.SetConfigType("yaml")
 		viper.SetConfigName(strings.Split(rulesFile, ".")[0])
@@ -1048,7 +1053,7 @@ func main() {
 		if addr != nil {
 			udpAddr[mirror] = addr
 		}
-		log.Info().
+		log.Warn().
 			Msgf("Setting up mirroring to %s", mirror)
 	}
 	for _, v := range flag.Args() {
