@@ -191,9 +191,10 @@ func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) re
 		tagMetric         string
 		sumElapsed        time.Duration
 		elapsed           time.Duration
-		returnStruct      replaceStruct
+		//returnStruct      replaceStruct
 	)
 
+	//areplace := make([]string, 0)
 	ruleNames := make([]string, 0)
 	sumStart := time.Now()
 	rrules := rules.Rules
@@ -341,10 +342,10 @@ func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) re
 		Int("matches", countMatch).
 		Dur("replace-time", sumElapsed).
 		Msg("All rules match")
-	returnStruct = replaceStruct{Replaced: replaced, countMatch: countMatch, lastPolicy: lastMatchedPolicy}
-	log.Info().
-		Msgf("struct: %s", returnStruct)
-	return returnStruct
+	//areplace[0] = replaced
+	//log.Info().
+	//	Msgf("areplace: %s", replaced)
+	return replaceStruct{Replaced: replaced, countMatch: countMatch, lastPolicy: lastMatchedPolicy}
 }
 
 // getMetricName() parses the given []byte metric as a string, extracts
@@ -510,38 +511,37 @@ func handleBuff(buff []byte) {
 				go func() {
 					replacedStruct = metricMatchReplace(string(buff[offset:offset+size]), &Rules, policy)
 				}()
-				buffNew := []byte(replacedStruct.Replaced)
-				matched := replacedStruct.countMatch
-				policy := replacedStruct.lastPolicy
-				// send replaced metric
-				if matched > 0 {
-					if policy == "pass" {
+				//buffNewstr := fmt.Sprintf("%s", replacedStruct.Replaced)
+				if replacedStruct.countMatch > 0 {
+					if replacedStruct.lastPolicy == "pass" {
 						log.Info().
-							Str("metric", string(buffNew)).
+							Str("metric", replacedStruct.Replaced).
 							Str("target", target).
 							Msg("sending")
-					} else if policy == "drop" {
+					} else if replacedStruct.lastPolicy == "drop" {
 						log.Info().
-							Str("metric", string(buffNew)).
+							Str("metric", replacedStruct.Replaced).
 							Msgf("dropping")
+						numMetricsDropped++
 					}
 				} else {
 					// don't replace metric if there's no rule match
-					if policy == "pass" {
+					if replacedStruct.lastPolicy == "pass" {
 						log.Info().
-							Str("metric", string(buffNew)).
+							Str("metric", replacedStruct.Replaced).
 							Str("target", target).
 							Msg("sending")
-					} else if policy == "drop" {
+					} else if replacedStruct.lastPolicy == "drop" {
 						log.Info().
-							Str("metric", string(buffNew)).
+							Str("metric", replacedStruct.Replaced).
 							Msgf("dropping")
+						numMetricsDropped++
 					}
 				}
-				if policy == "pass" {
-					packets[target].Write(buffNew)
+				if replacedStruct.lastPolicy == "pass" {
+					packets[target].Write([]byte(replacedStruct.Replaced))
 					packets[target].Write(sep)
-				} else if policy == "drop" {
+				} else if replacedStruct.lastPolicy == "drop" {
 					numMetricsDropped++
 				}
 				// send unchanged metric
@@ -610,7 +610,7 @@ func handleBuff(buff []byte) {
 	}
 	handleElapsed := time.Since(handleStart)
 
-	counter = ratecounter.NewRateCounter(1 * time.Second)
+	//counter = ratecounter.NewRateCounter(1 * time.Second)
 
 	if time.Now().Unix()-epochTime > 0 {
 		rate := int64(totalMetrics) / (time.Now().Unix() - epochTime)
@@ -728,8 +728,10 @@ func runServer(host string, port int) {
 			//fmt.Print("Handling %d length buffer...\n", len(buff))
 			handleBuff(buff)
 		case <-sig:
-			log.Print("Signal received.  Shutting down...\n")
-			log.Print("Received %d metrics.\n", totalMetrics)
+			log.Warn().
+				Msg("Signal received.  Shutting down...")
+			log.Warn().
+				Msgf("Received %d metrics.\n", totalMetrics)
 			return
 		}
 	}
@@ -838,7 +840,8 @@ func validateRules(rulesFile string, rulesDir string, exitOnErrors bool) map[str
 		log.Error().
 			Msg("Rules config has errors. Fix below rule definitions:")
 		for ruleName, errors := range rulesErrors {
-			log.Print("\tRule: %s", ruleName)
+			log.Warn().
+				Msgf("\tRule: %s", ruleName)
 			for _, err := range errors {
 				log.Error().
 					Msgf("\t\t %s", err)
@@ -935,7 +938,7 @@ func main() {
 	default:
 		zerolog.SetGlobalLevel(zerolog.InfoLevel)
 	}
-	zerolog.DurationFieldUnit = time.Millisecond
+	zerolog.DurationFieldUnit = time.Second
 	zerolog.DurationFieldInteger = false
 
 	//if isConsole {
