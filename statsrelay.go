@@ -15,8 +15,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -127,6 +129,9 @@ var rulesValidationTest bool
 // watchRulesConfig bool value for enabling watching config changes and reloading runtime values
 var watchRulesConfig bool
 
+// freeosmemory bool value for enable or disable aggresive os memory release
+var freeOsMemory bool
+
 // counter int for rate per second of all processed metics
 var counter *ratecounter.RateCounter
 
@@ -155,6 +160,15 @@ var Rules rulesDef
 
 // use a single instance of Validate, it caches struct info
 var validate *validator.Validate
+
+// Free system memory when possible
+// https://github.com/golang/go/issues/16930
+func freeOSMemory() {
+	for {
+		time.Sleep(5 * time.Second)
+		debug.FreeOSMemory()
+	}
+}
 
 // sockBufferMaxSize() returns the maximum size that the UDP receive buffer
 // in the kernel can be set to.  In bytes.
@@ -211,8 +225,6 @@ func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) re
 			policy = policyDefault
 		}
 		if replaced == "" {
-			log.Info().
-				Msgf("metric before: %s", metric)
 			start := time.Now()
 			match := re.FindAllString(metric, -1)
 			// send unchanged metric if no match and go to next rule
@@ -231,8 +243,6 @@ func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) re
 					replaced = re.ReplaceAllString(metric, rrules[i].Replace)
 				}
 			}
-			log.Info().
-				Msgf("metric after replace: %s", metric)
 			elapsed = time.Since(start)
 			// TODO: review below conditions and try to simplify them
 			if policy == "drop" {
@@ -261,8 +271,6 @@ func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) re
 			lastMatchedPolicy = policy
 			// if metric was replaced before use it against next rules
 		} else {
-			log.Info().
-				Msgf("replace before replace: %s", replaced)
 			start := time.Now()
 			match := re.FindAllString(replaced, -1)
 			// send unchanged metric if no match and go to next rule
@@ -281,8 +289,6 @@ func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) re
 					replaced = re.ReplaceAllString(replaced, rrules[i].Replace)
 				}
 			}
-			log.Info().
-				Msgf("replace after replace: %s", replaced)
 			// TODO: review below conditions and try to simplify them
 			if policy == "drop" {
 				// drop and stop processing
@@ -323,7 +329,6 @@ func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) re
 			Int("matches", countMatch).
 			Dur("replace-time", elapsed).
 			Msg("Single rule match")
-			//log.Print("[%s] MatchRule: %s Rule: %s, Final: %s, Match: %d in [%s]", strings.ToUpper(policy), matchRule, replaceRule, replaced, countMatch, elapsed)
 		// don't process next rules
 		if stopMatch {
 			break
@@ -342,9 +347,6 @@ func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) re
 		Int("matches", countMatch).
 		Dur("replace-time", sumElapsed).
 		Msg("All rules match")
-	//areplace[0] = replaced
-	//log.Info().
-	//	Msgf("areplace: %s", replaced)
 	return replaceStruct{Replaced: replaced, countMatch: countMatch, lastPolicy: lastMatchedPolicy}
 }
 
@@ -437,7 +439,7 @@ func buildPacketMap() map[string]*bytes.Buffer {
 
 // handleBuff() sorts through a full buffer of metrics and batches metrics
 // to remote statsd daemons using a consistent hash.
-func handleBuff(buff []byte) {
+func handleBuff(wg *sync.WaitGroup, buff []byte) {
 	handleStart := time.Now()
 	packets := buildPacketMap()
 	mirrorPackets := make(map[string]*bytes.Buffer)
@@ -459,6 +461,8 @@ func handleBuff(buff []byte) {
 		Factor: TCPFactorBackoff,
 		Jitter: false,
 	}
+
+	defer wg.Done()
 
 	for offset := 0; offset < len(buff); {
 	loop:
@@ -508,9 +512,9 @@ func handleBuff(buff []byte) {
 			}
 			// add to packet
 			if len(Rules.Rules) != 0 {
-				go func() {
-					replacedStruct = metricMatchReplace(string(buff[offset:offset+size]), &Rules, policy)
-				}()
+				//go func() {
+				replacedStruct = metricMatchReplace(string(buff[offset:offset+size]), &Rules, policy)
+				//}()
 				//buffNewstr := fmt.Sprintf("%s", replacedStruct.Replaced)
 				if replacedStruct.countMatch > 0 {
 					if replacedStruct.lastPolicy == "pass" {
@@ -632,13 +636,13 @@ func handleBuff(buff []byte) {
 // buffers.  Once a buffer is full, it passes it to handleBuff().
 //func readUDP(ip string, port int, handler func([]byte)) {
 func readUDP(ip string, port int, c chan []byte) {
+	var buff *[BUFFERSIZE]byte
 	var offset int
 	var timeout bool
 	var addr = net.UDPAddr{
 		Port: port,
 		IP:   net.ParseIP(ip),
 	}
-
 	log.Warn().
 		Msgf("Setting up log to %s level", logLevel)
 
@@ -651,19 +655,21 @@ func readUDP(ip string, port int, c chan []byte) {
 		log.Fatal().
 			Err(err).
 			Msgf("Error opening UDP socket.")
-		//log.Fatalln(err)
 	}
 	defer sock.Close()
 
 	log.Warn().
 		Msgf("Setting socket read buffer size to: %d", bufferMaxSize)
-
 	err = sock.SetReadBuffer(bufferMaxSize)
 	if err != nil {
-		err = sock.SetDeadline(time.Now().Add(time.Second))
 		log.Error().
 			Err(err).
 			Msg("Unable to set read buffer size on socket.  Non-fatal.")
+	}
+	err = sock.SetDeadline(time.Now().Add(time.Second))
+	if err != nil {
+		log.Panic().
+			Err(err)
 	}
 
 	if sendproto == "TCP" {
@@ -678,32 +684,37 @@ func readUDP(ip string, port int, c chan []byte) {
 			Msgf("Log Only for rules Eanbled")
 	}
 
-	log.Warn().
+	log.Info().
 		Msgf("Rock and Roll!")
 
-	buff := make([]byte, BUFFERSIZE)
 	for {
-		sock.SetReadDeadline(time.Now().Add(time.Second))
+		if buff == nil {
+			buff = new([BUFFERSIZE]byte)
+			offset = 0
+			timeout = false
+		}
+
 		i, err := sock.Read(buff[offset : BUFFERSIZE-1])
 		if err == nil {
 			buff[offset+i] = '\n'
 			offset = offset + i + 1
 		} else if err.(net.Error).Timeout() {
 			timeout = true
+			err = sock.SetDeadline(time.Now().Add(time.Second))
+			if err != nil {
+				log.Panic().
+					Err(err)
+			}
 		} else {
-			log.Error().
-				Err(err).
-				Msgf("Read Error")
+			log.Printf("Read Error: %s\n", err)
 			continue
 		}
 
 		if offset > BUFFERSIZE-4096 || timeout {
 			// Approaching make buff size
 			// we use a 4KiB margin
-			//handler(buff[:offset])
 			c <- buff[:offset]
-			offset = 0
-			timeout = false
+			buff = nil
 		}
 	}
 }
@@ -718,6 +729,8 @@ func runServer(host string, port int) {
 	var sig = make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, os.Kill, syscall.SIGTERM)
 
+	var wg sync.WaitGroup
+
 	// read incoming UDP packets
 	//readUDP(host, port, handleBuff)
 	go readUDP(host, port, c)
@@ -726,7 +739,8 @@ func runServer(host string, port int) {
 		select {
 		case buff := <-c:
 			//fmt.Print("Handling %d length buffer...\n", len(buff))
-			handleBuff(buff)
+			wg.Add(1)
+			go handleBuff(&wg, buff)
 		case <-sig:
 			log.Warn().
 				Msg("Signal received.  Shutting down...")
@@ -735,6 +749,7 @@ func runServer(host string, port int) {
 			return
 		}
 	}
+	wg.Wait()
 }
 
 // validateHost() checks if given HOST:PORT:INSTANCE address is in proper format
@@ -906,6 +921,8 @@ func main() {
 
 	flag.BoolVar(&version, "version", false, "Statsrelay version")
 
+	flag.BoolVar(&freeOsMemory, "freeosmemory", false, "Aggressively free memory back to the OS")
+
 	defaultBufferSize, err := getSockBufferMaxSize()
 	if err != nil {
 		defaultBufferSize = 32 * 1024
@@ -1027,6 +1044,10 @@ func main() {
 		log.Info().
 			Msgf("Using GOMAXPROCS %d", maxprocs)
 		runtime.GOMAXPROCS(maxprocs)
+	}
+
+	if len(Rules.Rules) != 0 || freeOsMemory {
+		go freeOSMemory()
 	}
 
 	if profiling {
