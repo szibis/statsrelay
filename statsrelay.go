@@ -501,13 +501,13 @@ func handleBuff(wg *sync.WaitGroup, buff []byte) {
 			if mirror != "" {
 				// check built packet size and send if metric doesn't fit
 				if mirrorPackets[mirror].Len()+size > packetLen {
-					go sendPacket(mirrorPackets[mirror].Bytes(), mirror, mirrorproto, TCPtimeout, boff, false)
+					sendPacket(mirrorPackets[mirror].Bytes(), mirror, mirrorproto, TCPtimeout, boff, false)
 					mirrorPackets[mirror].Reset()
 				}
 			}
 			// check built packet size and send if metric doesn't fit
 			if packets[target].Len()+size > packetLen {
-				go sendPacket(packets[target].Bytes(), target, sendproto, TCPtimeout, boff, logonly)
+				sendPacket(packets[target].Bytes(), target, sendproto, TCPtimeout, boff, logonly)
 				packets[target].Reset()
 			}
 			// add to packet
