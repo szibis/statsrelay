@@ -649,6 +649,8 @@ func readUDP(ip string, port int, c chan []byte) {
 	log.Warn().
 		Msgf("Starting version %s", VERSION)
 	log.Warn().
+		Msgf("Go version: %s", runtime.Version())
+	log.Warn().
 		Msgf("Listening on %s:%d", ip, port)
 	sock, err := net.ListenUDP("udp", &addr)
 	if err != nil {
@@ -933,7 +935,8 @@ func main() {
 	flag.Parse()
 
 	if version {
-		fmt.Print("%s\n", VERSION)
+		fmt.Printf("statsrelay %v\n", VERSION)
+		fmt.Printf("golang %v\n", runtime.Version())
 		os.Exit(0)
 	}
 
