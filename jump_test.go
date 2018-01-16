@@ -98,7 +98,7 @@ func TestJumpCHR(t *testing.T) {
 	}
 
 	for key, node := range data {
-		n := chr.GetNode(key)
+		n := chr.GetNode([]byte(key))
 		if n.Server != node {
 			t.Errorf("Hash not compatible with carbon-c-relay: %s => %s  Should be %s",
 				key, n.Server, node)

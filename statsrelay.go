@@ -135,6 +135,9 @@ var freeOsMemory bool
 // counter int for rate per second of all processed metics
 var counter *ratecounter.RateCounter
 
+// metric []byte for valid metric from buff offset
+var metric []byte
+
 var isConsole bool
 
 type rulesDef struct {
@@ -352,23 +355,26 @@ func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) re
 
 // getMetricName() parses the given []byte metric as a string, extracts
 // the metric key name and returns it as a string.
-func getMetricName(metric []byte) (string, error) {
+func getMetricName(metric []byte) ([]byte, error) {
 	// statsd metrics are of the form:
 	//    KEY:VALUE|TYPE|RATE or KEY:VALUE|TYPE|RATE|#tags
 	length := bytes.IndexByte(metric, byte(':'))
 	if length == -1 {
-		return "error", errors.New("Length of -1, must be invalid StatsD data")
+		log.Warn().
+			Str("Length of -1, must be invalid StatsD data", string(metric))
+		return make([]byte, 0), errors.New("Length of -1, must be invalid StatsD data")
 	}
-	return string(metric[:length]), nil
+	return metric[:length], nil
 }
 
 // genTags() add metric []byte and metricTags string, return string
 // of metrics with additional tags
 func genTags(metric string, metricTags []string, metricReplace string) string {
+	var tagsTmp string
 	// statsd metrics are of the form:
 	// KEY:VALUE|TYPE|RATE or KEY:VALUE|TYPE|RATE|#tags
-	// This function add or extend #tags in metric
-	tagsTmp := strings.Join(metricTags, ",")
+	// This function add or extend #tags in metrica
+	tagsTmp = strings.Join(metricTags, ",")
 	if strings.Contains(metric, "|#") {
 		return fmt.Sprintf("%s,%s", metricReplace, tagsTmp)
 	}
@@ -440,6 +446,7 @@ func buildPacketMap() map[string]*bytes.Buffer {
 // handleBuff() sorts through a full buffer of metrics and batches metrics
 // to remote statsd daemons using a consistent hash.
 func handleBuff(wg *sync.WaitGroup, buff []byte) {
+	var err error
 	handleStart := time.Now()
 	packets := buildPacketMap()
 	mirrorPackets := make(map[string]*bytes.Buffer)
@@ -491,7 +498,7 @@ func handleBuff(wg *sync.WaitGroup, buff []byte) {
 		}
 
 		// Check to ensure we get a metric, and not an invalid Byte sequence
-		metric, err := getMetricName(buff[offset : offset+size])
+		metric, err = getMetricName(buff[offset : offset+size])
 
 		if err == nil {
 
@@ -552,12 +559,12 @@ func handleBuff(wg *sync.WaitGroup, buff []byte) {
 			} else {
 				if policy == "drop" {
 					log.Debug().
-						Str("metric", metric).
+						Str("metric", string(metric)).
 						Msgf("dropping")
 					numMetricsDropped++
 				} else if policy == "pass" {
 					log.Info().
-						Str("metric", metric).
+						Str("metric", string(metric)).
 						Str("target", target).
 						Msg("sending")
 					packets[target].Write(buff[offset : offset+size])
@@ -576,13 +583,16 @@ func handleBuff(wg *sync.WaitGroup, buff []byte) {
 			}
 			numMetrics++
 			offset = offset + size + 1
+		} else {
+			log.Error().
+				Err(err)
 		}
 	}
 
 	// Handle reporting our own stats
 	stats := fmt.Sprintf("%s:%d|c\n", statsMetric, numMetrics-numMetricsDropped)
 	statsdropped := fmt.Sprintf("%s:%d|c\n", statsMetricDropped, numMetricsDropped)
-	target := hashRing.GetNode(statsMetric).Server
+	target := hashRing.GetNode([]byte(statsMetric)).Server
 	// make stats independent from main buffer to fix sliced metrics
 	sendPacket([]byte(stats+statsdropped), target, sendproto, TCPtimeout, boff, logonly)
 
