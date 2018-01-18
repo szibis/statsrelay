@@ -195,7 +195,7 @@ func getSockBufferMaxSize() (int, error) {
 }
 
 // metricMatchReplace() matches metric based on regexp definition rules
-func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) replaceStruct {
+func metricMatchReplace(metric []byte, rules *rulesDef, policyDefault string) replaceStruct {
 	var (
 		matchRule         string
 		replaceRule       string
@@ -229,7 +229,7 @@ func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) re
 		}
 		if replaced == "" {
 			start := time.Now()
-			match := re.FindAllString(metric, -1)
+			match := re.FindAllString(string(metric), -1)
 			// send unchanged metric if no match and go to next rule
 			if match == nil {
 				stopMatch = false
@@ -241,9 +241,9 @@ func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) re
 					tagMetric = genTags(metric, rrules[i].Tags, rrules[i].Replace)
 				}
 				if tagMetric != "" {
-					replaced = re.ReplaceAllString(metric, tagMetric)
+					replaced = re.ReplaceAllString(string(metric), tagMetric)
 				} else {
-					replaced = re.ReplaceAllString(metric, rrules[i].Replace)
+					replaced = re.ReplaceAllString(string(metric), rrules[i].Replace)
 				}
 			}
 			elapsed = time.Since(start)
@@ -284,7 +284,7 @@ func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) re
 			if match != nil {
 				matched++
 				if rrules[i].Tags != nil {
-					tagMetric = genTags(replaced, rrules[i].Tags, rrules[i].Replace)
+					tagMetric = genTags([]byte(replaced), rrules[i].Tags, rrules[i].Replace)
 				}
 				if tagMetric != "" {
 					replaced = re.ReplaceAllString(replaced, tagMetric)
@@ -325,7 +325,7 @@ func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) re
 		}
 		// per match log info
 		log.Debug().
-			Str("policy", strings.ToUpper(policy)).
+			Str("policy", policy).
 			Str("rule-matched", matchRule).
 			Str("replace-rule", replaceRule).
 			Str("replaced", replaced).
@@ -344,7 +344,7 @@ func metricMatchReplace(metric string, rules *rulesDef, policyDefault string) re
 	sumElapsed = time.Since(sumStart)
 	// summary log info per metric with all matches and replaces
 	log.Info().
-		Str("policy", strings.ToUpper(policy)).
+		Str("policy", policy).
 		Str("rules-matched", strings.Join(ruleNames, ",")).
 		Str("replaced", replaced).
 		Int("matches", countMatch).
@@ -369,19 +369,25 @@ func getMetricName(metric []byte) ([]byte, error) {
 
 // genTags() add metric []byte and metricTags string, return string
 // of metrics with additional tags
-func genTags(metric string, metricTags []string, metricReplace string) string {
-	var tagsTmp string
+func genTags(metric []byte, metricTags []string, metricReplace string) string {
+	var buffer bytes.Buffer
+	var taghash []byte = []byte("|#")
 	// statsd metrics are of the form:
 	// KEY:VALUE|TYPE|RATE or KEY:VALUE|TYPE|RATE|#tags
 	// This function add or extend #tags in metrica
-	tagsTmp = strings.Join(metricTags, ",")
-	if strings.Contains(metric, "|#") {
-		return fmt.Sprintf("%s,%s", metricReplace, tagsTmp)
+	buffer.WriteString(metricReplace)
+	if bytes.Contains(metric, taghash) {
+		buffer.WriteString(",")
+	} else {
+		buffer.WriteString("|#")
 	}
-	if tagsTmp != "" {
-		return fmt.Sprintf("%s|#%s", metricReplace, tagsTmp)
+	for i := 0; i < len(metricTags); i++ {
+		buffer.WriteString(metricTags[i])
+		if i < len(metricTags)-1 {
+			buffer.WriteString(",")
+		}
 	}
-	return metricReplace
+	return buffer.String()
 }
 
 // sendPacket takes a []byte and writes that directly to a UDP socket
@@ -520,7 +526,7 @@ func handleBuff(wg *sync.WaitGroup, buff []byte) {
 			// add to packet
 			if len(Rules.Rules) != 0 {
 				//go func() {
-				replacedStruct = metricMatchReplace(string(buff[offset:offset+size]), &Rules, policy)
+				replacedStruct = metricMatchReplace(metric, &Rules, policy)
 				//}()
 				//buffNewstr := fmt.Sprintf("%s", replacedStruct.Replaced)
 				if replacedStruct.countMatch > 0 {
